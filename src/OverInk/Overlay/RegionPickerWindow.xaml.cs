@@ -12,9 +12,13 @@ public partial class RegionPickerWindow : Window
     private bool _dragging;
     private Rect _monitorDips;
 
-    public RegionPickerWindow()
+    public RegionPickerWindow(string? hint = null)
     {
         InitializeComponent();
+        if (!string.IsNullOrWhiteSpace(hint))
+        {
+            HintText.Text = hint;
+        }
         PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape)

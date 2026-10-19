@@ -17,6 +17,7 @@ public sealed class EmbeddedWwwRootFileProvider : IFileProvider
         {
             ["index.html"] = ($"{Prefix}index.html", "text/html; charset=utf-8"),
             ["app.js"] = ($"{Prefix}app.js", "text/javascript; charset=utf-8"),
+            ["icons.js"] = ($"{Prefix}icons.js", "text/javascript; charset=utf-8"),
             ["styles.css"] = ($"{Prefix}styles.css", "text/css; charset=utf-8"),
         };
 

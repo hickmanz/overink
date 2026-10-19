@@ -65,6 +65,8 @@ public sealed class FrameStreamer : IDisposable
 
             try
             {
+                // Read before capturing so a frame never claims a revision newer than what it shows.
+                var inkRevision = _overlay.InkRevision;
                 var bounds = CaptureRegionHelper.GetStreamPixels(settings);
                 var width = (int)Math.Max(1, bounds.Width);
                 var height = (int)Math.Max(1, bounds.Height);
@@ -82,7 +84,7 @@ public sealed class FrameStreamer : IDisposable
                         CopyPixelOperation.SourceCopy);
                 }
 
-                var maxEdge = Math.Max(320, settings.RemoteMaxEdge);
+                var maxEdge = RemoteStreamEstimator.GetEffectiveMaxEdge(settings);
                 var scale = Math.Min(1.0, maxEdge / (double)Math.Max(width, height));
                 var targetW = Math.Max(1, (int)(width * scale));
                 var targetH = Math.Max(1, (int)(height * scale));
@@ -133,7 +135,6 @@ public sealed class FrameStreamer : IDisposable
                     jpeg = ms.ToArray();
                 }
 
-                var inkRevision = _overlay.InkRevision;
                 var payload = BuildBinaryFrame(seq++, inkRevision, (ushort)targetW, (ushort)targetH, jpeg);
                 FrameReady?.Invoke(payload);
             }

@@ -11,3 +11,4 @@ TestResults/
 *.DotSettings.user
 appsettings.local.json
 .cursor/
+artifacts/

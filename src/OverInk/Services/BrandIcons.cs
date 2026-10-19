@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.IO;
 using System.Drawing.Drawing2D;
 using System.Windows;
 using System.Windows.Interop;
@@ -30,6 +31,11 @@ public static class BrandIcons
 
     public static ImageSource CreateToolbarImage(int size = 24)
     {
+        if (TryLoadToolbarPng(size, out var png))
+        {
+            return png;
+        }
+
         using var bitmap = CreateBitmap(size, size);
         var hBitmap = bitmap.GetHbitmap();
         try
@@ -43,6 +49,33 @@ public static class BrandIcons
         finally
         {
             DeleteObject(hBitmap);
+        }
+    }
+
+    private static bool TryLoadToolbarPng(int decodeSize, out ImageSource source)
+    {
+        source = null!;
+        var path = AppIconPaths.PngPath;
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.DecodePixelWidth = decodeSize;
+            image.EndInit();
+            image.Freeze();
+            source = image;
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

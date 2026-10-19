@@ -1,73 +1,95 @@
 <!DOCTYPE html>
-
 <html lang="en">
-
 <head>
-
   <meta charset="utf-8" />
-
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0f1115" />
   <title>OverInk Remote</title>
-
-  <link rel="stylesheet" href="styles.css?v=10" />
-
+  <link rel="stylesheet" href="styles.css?v=13" />
 </head>
-
 <body>
-
   <div id="root">
-
     <canvas id="frame"></canvas>
-
     <canvas id="peerInk"></canvas>
-
     <canvas id="localInk"></canvas>
-
     <div id="inputSurface" tabindex="0" aria-label="Drawing surface"></div>
 
-    <div id="status">Connecting…</div>
-
-    <div id="hud">
-
-      <div id="settingsPanel" class="panel-hidden" aria-hidden="true">
-
-        <div class="settings-title">Settings</div>
-
-        <label class="settings-row">
-
-          <input type="checkbox" id="debugLogToggle" />
-
-          <span>Connection log</span>
-
-        </label>
-
-        <button type="button" id="resetViewBtn" class="tool-btn settings-action">Reset view</button>
-
-        <p class="settings-hint">Pencil draws · one finger pans · two fingers pinch &amp; rotate</p>
-
-      </div>
-
-      <pre id="log" class="panel-hidden" aria-label="Connection log"></pre>
-
-      <div id="toolbarRow">
-
-        <div id="tools"></div>
-
-        <button type="button" id="settingsBtn" class="tool-btn settings-gear" title="Settings">⚙</button>
-
-      </div>
-
+    <!-- Connection chip (top right) -->
+    <div id="statusChip" class="ui chip" data-state="connecting" role="status">
+      <span id="statusIcon" class="chip-icon"></span>
+      <span id="status">Connecting…</span>
     </div>
 
+    <!-- Snap targets shown while dragging the dock -->
+    <div id="snapZones" class="panel-hidden" aria-hidden="true">
+      <div class="snap-zone" data-edge="left"></div>
+      <div class="snap-zone" data-edge="bottom"></div>
+      <div class="snap-zone" data-edge="right"></div>
+    </div>
+
+    <div id="hud" data-edge="bottom">
+      <!-- Popovers sit beside the dock; only one is open at a time -->
+      <div id="colorPopover" class="ui popover panel-hidden" aria-hidden="true">
+        <div class="popover-title">Color</div>
+        <div id="swatches" class="swatches"></div>
+      </div>
+
+      <div id="sizePopover" class="ui popover panel-hidden" aria-hidden="true">
+        <div class="popover-title">Stroke width <span id="sizeValue" class="popover-value">4</span></div>
+        <div class="size-row">
+          <span class="size-preview-wrap"><svg class="stroke-icon" viewBox="0 0 28 24" width="36" height="31" fill="none" stroke-linecap="round" aria-hidden="true"><path id="sizePreview" d="M5 17C9 5 15 21 23 7" stroke="currentColor" stroke-width="3" /></svg></span>
+          <input id="sizeSlider" type="range" min="1" max="20" step="1" value="4" aria-label="Stroke width" />
+        </div>
+        <label class="switch-row">
+          <span class="row-label">Pressure sensitivity</span>
+          <input type="checkbox" id="pressureToggle" class="switch" checked />
+        </label>
+      </div>
+
+      <div id="settingsPanel" class="ui popover panel-hidden" aria-hidden="true">
+        <div class="popover-title">Settings</div>
+        <label class="switch-row">
+          <span class="row-icon" id="bugIcon"></span>
+          <span class="row-label">Connection log</span>
+          <input type="checkbox" id="debugLogToggle" class="switch" />
+        </label>
+        <button type="button" id="resetViewBtn" class="row-btn">
+          <span class="row-icon" id="resetIcon"></span>
+          <span class="row-label">Reset view</span>
+        </button>
+        <ul class="hints">
+          <li><span id="hintPen"></span>Apple Pencil draws</li>
+          <li><span id="hintHand"></span>One finger pans</li>
+          <li><span id="hintZoom"></span>Two fingers pinch &amp; rotate</li>
+        </ul>
+      </div>
+
+      <pre id="log" class="ui panel-hidden" aria-label="Connection log"></pre>
+
+      <div id="dock" class="ui dock" role="toolbar" aria-label="Drawing tools">
+        <button type="button" id="dockGrip" class="dock-btn grip" aria-label="Move toolbar" title="Drag to move the toolbar to another edge"></button>
+        <span class="divider"></span>
+        <div id="tools" class="group"></div>
+        <span class="divider"></span>
+        <div class="group">
+          <button type="button" id="colorBtn" class="dock-btn" aria-label="Color" title="Color"><span id="colorDot" class="color-dot"></span></button>
+          <button type="button" id="sizeBtn" class="dock-btn" aria-label="Stroke width" title="Stroke width"><svg class="stroke-icon" viewBox="0 0 28 24" width="28" height="24" fill="none" stroke-linecap="round" aria-hidden="true"><path id="sizeDot" d="M5 17C9 5 15 21 23 7" stroke="currentColor" stroke-width="3" /></svg></button>
+        </div>
+        <span class="divider"></span>
+        <div class="group">
+          <button type="button" id="undoBtn" class="dock-btn" aria-label="Undo" title="Undo"></button>
+          <button type="button" id="redoBtn" class="dock-btn" aria-label="Redo" title="Redo"></button>
+          <button type="button" id="clearBtn" class="dock-btn danger" aria-label="Clear all" title="Clear all"></button>
+        </div>
+        <span class="divider"></span>
+        <div class="group">
+          <button type="button" id="settingsBtn" class="dock-btn" aria-label="Settings" title="Settings"></button>
+        </div>
+      </div>
+    </div>
   </div>
-
-  <script type="module" src="app.js?v=14"></script>
-
+  <script type="module" src="app.js?v=24"></script>
 </body>
-
 </html>
-
-

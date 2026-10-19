@@ -46,6 +46,36 @@ internal sealed class InkStrokeAction : IUndoableAction
     }
 }
 
+/// <summary>One undo step that swaps a set of strokes for another (e.g. a partial erase: original -> pieces).</summary>
+internal sealed class InkReplaceAction : IUndoableAction
+{
+    private readonly InkCanvas _canvas;
+    private readonly StrokeCollection _removed;
+    private readonly StrokeCollection _added;
+
+    public InkReplaceAction(InkCanvas canvas, StrokeCollection removed, StrokeCollection added, string authorId)
+    {
+        _canvas = canvas;
+        _removed = removed;
+        _added = added;
+        AuthorId = authorId;
+    }
+
+    public string AuthorId { get; }
+
+    public void Undo()
+    {
+        _canvas.Strokes.Remove(_added);
+        _canvas.Strokes.Add(_removed);
+    }
+
+    public void Redo()
+    {
+        _canvas.Strokes.Remove(_removed);
+        _canvas.Strokes.Add(_added);
+    }
+}
+
 internal sealed class ShapeAction : IUndoableAction
 {
     private readonly Panel _layer;

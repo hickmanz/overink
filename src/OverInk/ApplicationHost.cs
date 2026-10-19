@@ -7,6 +7,7 @@ using OverInk.Models;
 using OverInk.Overlay;
 using OverInk.Remote;
 using OverInk.Services;
+using System.Windows.Media.Imaging;
 using OverInk.Toolbar;
 
 namespace OverInk;
@@ -60,7 +61,7 @@ public sealed class ApplicationHost : IDisposable
             () => _overlay.Undo(),
             () => _overlay.Redo());
 
-        _toolbar.CaptureRequested += (_, _) => CaptureToEditor();
+        _toolbar.CaptureRequested += (_, e) => CaptureToEditor(e.Kind);
         _toolbar.SetRegionRequested += (_, _) => OnSetRegionToolbarClick();
         _toolbar.HideRequested += (_, _) => SetVisible(false);
         _toolbar.HotkeyChanged += (_, args) => ApplyHotkey(args.Modifiers, args.VirtualKey);
@@ -239,7 +240,6 @@ public sealed class ApplicationHost : IDisposable
             _settings.Current.RemoteEnabled = true;
             _settings.Save();
             SyncRemoteServerUi(true);
-            _toolbar.SetStatus($"Remote sketching server on port {_settings.Current.RemotePort}");
         }
         catch (Exception ex)
         {
@@ -281,12 +281,71 @@ public sealed class ApplicationHost : IDisposable
         }).Task;
     }
 
-    private void CaptureToEditor()
+    private void CaptureToEditor(CaptureRequestKind kind = CaptureRequestKind.Default)
     {
         var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-        var bitmap = ScreenCaptureService.Capture(geometry.Pixels, _toolbar);
+        if (!TryResolveCapturePixels(kind, geometry, out var pixelBounds))
+        {
+            return;
+        }
+
+        var bitmap = ScreenCaptureService.Capture(pixelBounds, CollectWindowsHiddenDuringCapture());
+
         var item = _captureLibrary.CreateFromCapture(bitmap);
         OpenEditor(item);
+    }
+
+    private bool TryResolveCapturePixels(CaptureRequestKind kind, MonitorGeometry geometry, out Rect pixelBounds)
+    {
+        pixelBounds = default;
+
+        if (kind == CaptureRequestKind.PickRegion)
+        {
+            _captureRegionChrome?.Hide();
+            var picker = new RegionPickerWindow("Drag capture area · Esc cancel")
+            {
+                Owner = _toolbar
+            };
+
+            if (picker.ShowDialog() != true || picker.SelectedDipsRect is not { } dipRect)
+            {
+                RestoreCaptureRegionChromeAfterPick();
+                return false;
+            }
+
+            pixelBounds = CaptureRegionHelper.DipsRectToPixels(dipRect, geometry);
+            return true;
+        }
+
+        if (_settings.Current.ToolbarCaptureMode == CaptureToolbarMode.FullScreen)
+        {
+            pixelBounds = geometry.Pixels;
+            return true;
+        }
+
+        pixelBounds = _settings.Current.RemoteRegionEnabled
+            ? CaptureRegionHelper.GetStreamPixels(_settings.Current)
+            : geometry.Pixels;
+        return true;
+    }
+
+    private Window[] CollectWindowsHiddenDuringCapture()
+    {
+        var list = new List<Window> { _toolbar };
+        if (_captureRegionChrome is { IsVisible: true })
+        {
+            list.Add(_captureRegionChrome);
+        }
+
+        return list.ToArray();
+    }
+
+    private void RestoreCaptureRegionChromeAfterPick()
+    {
+        if (_settings.Current.RemoteRegionEnabled)
+        {
+            ShowCaptureRegionChrome();
+        }
     }
 
     private void OpenEditorLibrary()
@@ -380,6 +439,8 @@ public sealed class ApplicationHost : IDisposable
             _overlay.SetCaptureRegionOutline(null);
             _toolbar.SetCaptureRegionActive(false);
         }
+
+        _toolbar.RefreshCaptureButtonHint();
     }
 
     private void OnSetRegionToolbarClick()
@@ -396,7 +457,7 @@ public sealed class ApplicationHost : IDisposable
     private void BeginCaptureRegionPick()
     {
         _captureRegionChrome?.Hide();
-        var picker = new RegionPickerWindow
+        var picker = new RegionPickerWindow("Drag remote stream region · Esc cancel")
         {
             Owner = _toolbar
         };

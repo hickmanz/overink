@@ -17,7 +17,7 @@
                    Fill="#224C8DFF" StrokeDashArray="4 3" Visibility="Collapsed" IsHitTestVisible="False" />
         <Border x:Name="HintBar" Background="#DD111114" CornerRadius="8" Padding="14,8"
                 BorderBrush="#44FFFFFF" BorderThickness="1" IsHitTestVisible="False">
-            <TextBlock Text="Drag remote capture region · Esc cancel" Foreground="White" FontSize="13" />
+            <TextBlock x:Name="HintText" Text="Drag to select region · Esc cancel" Foreground="White" FontSize="13" />
         </Border>
     </Canvas>
 </Window>

@@ -39,9 +39,18 @@ public sealed record RemoteState(
     string Mode,
     double ScreenW,
     double ScreenH,
-    bool RegionActive);
+    bool RegionActive,
+    bool PressureSensitive = true);
+
+public sealed record RemoteSetPressure(bool Enabled);
 
 public sealed record RemoteAck(Guid Id, long InkRevision);
+
+/// <summary>Strokes (by client stroke id) that no longer exist on the PC; clients drop their vector copies.</summary>
+public sealed record RemoteStrokesRemoved(Guid[] Ids);
+
+/// <summary>All ink was cleared on the PC.</summary>
+public sealed record RemoteCleared();
 
 public sealed record RemoteError(string Code, string Message);
 
@@ -124,7 +133,12 @@ public sealed record RemoteShapeCommit(
     string Color,
     double Size);
 
-public sealed record RemoteErase(float[] Pts, double Size);
+public sealed record RemoteErase(float[] Pts, double Size, bool? Whole = null);
+
+public sealed record RemoteStrokeSnapshot(Guid Id, string Color, double Size, float[] Pts, bool IgnorePressure);
+
+/// <summary>Strokes that (re)appeared on the PC with ids the client knows: erase leftovers, undo/redo restores.</summary>
+public sealed record RemoteStrokesAdded(List<RemoteStrokeSnapshot> Strokes);
 
 public sealed record RemoteSetTool(string Tool);
 

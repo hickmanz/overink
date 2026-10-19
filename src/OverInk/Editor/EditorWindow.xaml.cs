@@ -2,11 +2,14 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Ink;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
+using OverInk.Models;
+using OverInk.Services;
 
 namespace OverInk.Editor;
 
@@ -30,9 +33,12 @@ public partial class EditorWindow : Window
     private bool _suppressLibrarySelection;
     private ZoomMode _zoomMode = ZoomMode.Fit;
     private double _freeScale = 1;
-    private Point _cropStart;
     private Rect _cropBounds;
+    private string? _activeCropHandle;
+    private Rect _cropBoundsAtDragStart;
     private Point? _dragStart;
+    private const double MinCropSize = 48;
+    private const double HandleHalf = 6;
     private CaptureTrayEntry? _dragEntry;
 
     public EditorWindow(CaptureLibrary library, Color penColor, double penThickness)
@@ -46,10 +52,16 @@ public partial class EditorWindow : Window
             Color = penColor,
             Width = penThickness,
             Height = penThickness,
-            FitToCurve = true
+            FitToCurve = false
         };
 
+        InkSurface.StrokeCollected += (_, e) => StrokeSmoother.Apply(e.Stroke);
         InkSurface.Strokes.StrokesChanged += (_, _) => MarkDirty();
+
+        EditorColorPicker.SetColor(penColor);
+        EditorColorPicker.ColorChanged += (_, color) => ApplyPenColor(color);
+        PenSizeSlider.Value = penThickness;
+        BuildPresetSwatches(penColor);
 
         _library.LibraryChanged += OnLibraryChanged;
         Loaded += (_, _) =>
@@ -131,8 +143,7 @@ public partial class EditorWindow : Window
             InkSurface.Strokes.Add(stroke);
         }
         ApplyCanvasDimensions();
-        CropOverlay.Visibility = Visibility.Collapsed;
-        DetachCropHandlers();
+        ResetCropToFull();
         _isDirty = false;
         _loadingDocument = false;
         _zoomMode = ZoomMode.Fit;
@@ -149,9 +160,244 @@ public partial class EditorWindow : Window
         CanvasHost.Height = h;
         InkSurface.Width = w;
         InkSurface.Height = h;
-        CropOverlay.Width = w;
-        CropOverlay.Height = h;
+        CropVisualLayer.Width = w;
+        CropVisualLayer.Height = h;
+        CropHandleLayer.Width = w;
+        CropHandleLayer.Height = h;
     }
+
+    private void BuildPresetSwatches(Color current)
+    {
+        PresetSwatchesPanel.Children.Clear();
+        foreach (var hex in PresetPalette.HexColors.Take(10))
+        {
+            if (!PresetPalette.TryParseHex(hex, out var color))
+            {
+                continue;
+            }
+
+            var swatch = new ToggleButton
+            {
+                Width = 22,
+                Height = 22,
+                Margin = new Thickness(0, 0, 6, 6),
+                Background = new SolidColorBrush(color),
+                BorderBrush = Brushes.Transparent,
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                ToolTip = hex
+            };
+            if (color == current)
+            {
+                swatch.BorderBrush = (Brush)FindResource("AccentBrush");
+                swatch.IsChecked = true;
+            }
+
+            swatch.Click += (_, _) =>
+            {
+                EditorColorPicker.SetColor(color);
+                ApplyPenColor(color);
+            };
+            PresetSwatchesPanel.Children.Add(swatch);
+        }
+    }
+
+    private void ApplyPenColor(Color color)
+    {
+        var attrs = InkSurface.DefaultDrawingAttributes.Clone();
+        attrs.Color = color;
+        InkSurface.DefaultDrawingAttributes = attrs;
+    }
+
+    private void PenSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        var size = Math.Max(1, e.NewValue);
+        var attrs = InkSurface.DefaultDrawingAttributes.Clone();
+        attrs.Width = size;
+        attrs.Height = size;
+        InkSurface.DefaultDrawingAttributes = attrs;
+    }
+
+    private Rect FullImageCropBounds() =>
+        new(0, 0, CanvasHost.Width, CanvasHost.Height);
+
+    private void ResetCropToFull()
+    {
+        _cropBounds = FullImageCropBounds();
+        UpdateCropVisuals();
+    }
+
+    private bool IsCropModified()
+    {
+        var full = FullImageCropBounds();
+        return Math.Abs(_cropBounds.X) > 0.5
+               || Math.Abs(_cropBounds.Y) > 0.5
+               || Math.Abs(_cropBounds.Width - full.Width) > 0.5
+               || Math.Abs(_cropBounds.Height - full.Height) > 0.5;
+    }
+
+    private void UpdateCropVisuals()
+    {
+        if (CanvasHost.Width < 1 || CanvasHost.Height < 1)
+        {
+            return;
+        }
+
+        var w = CanvasHost.Width;
+        var h = CanvasHost.Height;
+        var r = _cropBounds;
+
+        var showDim = IsCropModified();
+        CropDimTop.Visibility = showDim ? Visibility.Visible : Visibility.Collapsed;
+        CropDimLeft.Visibility = showDim ? Visibility.Visible : Visibility.Collapsed;
+        CropDimRight.Visibility = showDim ? Visibility.Visible : Visibility.Collapsed;
+        CropDimBottom.Visibility = showDim ? Visibility.Visible : Visibility.Collapsed;
+
+        if (showDim)
+        {
+            SetRect(CropDimTop, 0, 0, w, Math.Max(0, r.Top));
+            SetRect(CropDimLeft, 0, r.Top, Math.Max(0, r.Left), r.Height);
+            SetRect(CropDimRight, r.Right, r.Top, Math.Max(0, w - r.Right), r.Height);
+            SetRect(CropDimBottom, 0, r.Bottom, w, Math.Max(0, h - r.Bottom));
+        }
+
+        SetRect(CropFrame, r.Left, r.Top, r.Width, r.Height);
+        CropFrame.Visibility = showDim ? Visibility.Visible : Visibility.Collapsed;
+
+        PlaceHandle(HandleTopLeft, r.Left - HandleHalf, r.Top - HandleHalf);
+        PlaceHandle(HandleTop, r.Left + r.Width / 2 - HandleHalf, r.Top - HandleHalf);
+        PlaceHandle(HandleTopRight, r.Right - HandleHalf, r.Top - HandleHalf);
+        PlaceHandle(HandleRight, r.Right - HandleHalf, r.Top + r.Height / 2 - HandleHalf);
+        PlaceHandle(HandleBottomRight, r.Right - HandleHalf, r.Bottom - HandleHalf);
+        PlaceHandle(HandleBottom, r.Left + r.Width / 2 - HandleHalf, r.Bottom - HandleHalf);
+        PlaceHandle(HandleBottomLeft, r.Left - HandleHalf, r.Bottom - HandleHalf);
+        PlaceHandle(HandleLeft, r.Left - HandleHalf, r.Top + r.Height / 2 - HandleHalf);
+    }
+
+    private static void SetRect(System.Windows.Shapes.Rectangle rect, double x, double y, double width, double height)
+    {
+        Canvas.SetLeft(rect, x);
+        Canvas.SetTop(rect, y);
+        rect.Width = Math.Max(0, width);
+        rect.Height = Math.Max(0, height);
+    }
+
+    private static void PlaceHandle(FrameworkElement handle, double x, double y)
+    {
+        Canvas.SetLeft(handle, x);
+        Canvas.SetTop(handle, y);
+    }
+
+    private void CropHandle_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string tag })
+        {
+            return;
+        }
+
+        _activeCropHandle = tag;
+        _cropBoundsAtDragStart = _cropBounds;
+        CropHandleLayer.CaptureMouse();
+        InkSurface.EditingMode = InkCanvasEditingMode.None;
+        e.Handled = true;
+    }
+
+    private void CropHandle_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_activeCropHandle is null || !CropHandleLayer.IsMouseCaptured)
+        {
+            return;
+        }
+
+        var pos = e.GetPosition(CropHandleLayer);
+        _cropBounds = AdjustCropBounds(_activeCropHandle, _cropBoundsAtDragStart, pos);
+        UpdateCropVisuals();
+        e.Handled = true;
+    }
+
+    private void CropHandle_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        var wasDragging = _activeCropHandle is not null;
+        if (wasDragging)
+        {
+            _activeCropHandle = null;
+            CommitCropIfNeeded();
+            RestoreInkEditingMode();
+        }
+
+        if (CropHandleLayer.IsMouseCaptured)
+        {
+            CropHandleLayer.ReleaseMouseCapture();
+        }
+
+        if (wasDragging)
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void RestoreInkEditingMode()
+    {
+        if (PenToggle.IsChecked == true)
+        {
+            InkSurface.EditingMode = InkCanvasEditingMode.Ink;
+        }
+        else if (EraserToggle.IsChecked == true)
+        {
+            InkSurface.EditingMode = InkCanvasEditingMode.EraseByStroke;
+        }
+    }
+
+    private Rect AdjustCropBounds(string handle, Rect start, Point pointer)
+    {
+        var maxW = CanvasHost.Width;
+        var maxH = CanvasHost.Height;
+        var left = start.Left;
+        var top = start.Top;
+        var right = start.Right;
+        var bottom = start.Bottom;
+
+        switch (handle)
+        {
+            case "Left":
+                left = Math.Clamp(pointer.X, 0, right - MinCropSize);
+                break;
+            case "Right":
+                right = Math.Clamp(pointer.X, left + MinCropSize, maxW);
+                break;
+            case "Top":
+                top = Math.Clamp(pointer.Y, 0, bottom - MinCropSize);
+                break;
+            case "Bottom":
+                bottom = Math.Clamp(pointer.Y, top + MinCropSize, maxH);
+                break;
+            case "TopLeft":
+                left = Math.Clamp(pointer.X, 0, right - MinCropSize);
+                top = Math.Clamp(pointer.Y, 0, bottom - MinCropSize);
+                break;
+            case "TopRight":
+                right = Math.Clamp(pointer.X, left + MinCropSize, maxW);
+                top = Math.Clamp(pointer.Y, 0, bottom - MinCropSize);
+                break;
+            case "BottomLeft":
+                left = Math.Clamp(pointer.X, 0, right - MinCropSize);
+                bottom = Math.Clamp(pointer.Y, top + MinCropSize, maxH);
+                break;
+            case "BottomRight":
+                right = Math.Clamp(pointer.X, left + MinCropSize, maxW);
+                bottom = Math.Clamp(pointer.Y, top + MinCropSize, maxH);
+                break;
+        }
+
+        return new Rect(left, top, Math.Max(MinCropSize, right - left), Math.Max(MinCropSize, bottom - top));
+    }
+
+    private void ResetCrop_Click(object sender, RoutedEventArgs e) => ResetCropToFull();
 
     private void MarkDirty()
     {
@@ -310,83 +556,33 @@ public partial class EditorWindow : Window
     {
         PenToggle.IsChecked = true;
         EraserToggle.IsChecked = false;
+        _activeCropHandle = null;
+        if (CropHandleLayer.IsMouseCaptured)
+        {
+            CropHandleLayer.ReleaseMouseCapture();
+        }
+
         InkSurface.EditingMode = InkCanvasEditingMode.Ink;
-        CropOverlay.Visibility = Visibility.Collapsed;
-        DetachCropHandlers();
+        InkSurface.Focus();
     }
 
     private void Eraser_Click(object sender, RoutedEventArgs e)
     {
         EraserToggle.IsChecked = true;
         PenToggle.IsChecked = false;
-        InkSurface.EditingMode = InkCanvasEditingMode.EraseByStroke;
-        CropOverlay.Visibility = Visibility.Collapsed;
-        DetachCropHandlers();
-    }
-
-    private void Crop_Click(object sender, RoutedEventArgs e)
-    {
-        PenToggle.IsChecked = false;
-        EraserToggle.IsChecked = false;
-        CropOverlay.Visibility = Visibility.Visible;
-        InkSurface.EditingMode = InkCanvasEditingMode.None;
-        AttachCropHandlers();
-    }
-
-    private void AttachCropHandlers()
-    {
-        CropOverlay.MouseLeftButtonDown += CropOverlay_MouseLeftButtonDown;
-        CropOverlay.MouseMove += CropOverlay_MouseMove;
-        CropOverlay.MouseLeftButtonUp += CropOverlay_MouseLeftButtonUp;
-    }
-
-    private void DetachCropHandlers()
-    {
-        CropOverlay.MouseLeftButtonDown -= CropOverlay_MouseLeftButtonDown;
-        CropOverlay.MouseMove -= CropOverlay_MouseMove;
-        CropOverlay.MouseLeftButtonUp -= CropOverlay_MouseLeftButtonUp;
-    }
-
-    private void CropOverlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        _cropStart = e.GetPosition(CropOverlay);
-        _cropBounds = new Rect(_cropStart, _cropStart);
-        UpdateCropRect();
-        CropOverlay.CaptureMouse();
-    }
-
-    private void CropOverlay_MouseMove(object sender, MouseEventArgs e)
-    {
-        if (!CropOverlay.IsMouseCaptured)
+        _activeCropHandle = null;
+        if (CropHandleLayer.IsMouseCaptured)
         {
-            return;
+            CropHandleLayer.ReleaseMouseCapture();
         }
 
-        var current = e.GetPosition(CropOverlay);
-        _cropBounds = new Rect(
-            Math.Min(_cropStart.X, current.X),
-            Math.Min(_cropStart.Y, current.Y),
-            Math.Abs(_cropStart.X - current.X),
-            Math.Abs(_cropStart.Y - current.Y));
-        UpdateCropRect();
+        InkSurface.EditingMode = InkCanvasEditingMode.EraseByStroke;
+        InkSurface.Focus();
     }
 
-    private void CropOverlay_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void CommitCropIfNeeded()
     {
-        CropOverlay.ReleaseMouseCapture();
-    }
-
-    private void UpdateCropRect()
-    {
-        Canvas.SetLeft(CropRect, _cropBounds.X);
-        Canvas.SetTop(CropRect, _cropBounds.Y);
-        CropRect.Width = Math.Max(1, _cropBounds.Width);
-        CropRect.Height = Math.Max(1, _cropBounds.Height);
-    }
-
-    private void ApplyCrop_Click(object sender, RoutedEventArgs e)
-    {
-        if (_cropBounds.Width < 2 || _cropBounds.Height < 2)
+        if (!IsCropModified() || _cropBounds.Width < 2 || _cropBounds.Height < 2)
         {
             return;
         }
@@ -407,8 +603,7 @@ public partial class EditorWindow : Window
         _originalSource = cropped;
         BackgroundImage.Source = cropped;
         ApplyCanvasDimensions();
-        CropOverlay.Visibility = Visibility.Collapsed;
-        DetachCropHandlers();
+        ResetCropToFull();
         MarkDirty();
         UpdateZoom();
     }

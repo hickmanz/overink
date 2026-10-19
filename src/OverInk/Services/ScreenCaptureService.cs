@@ -11,6 +11,10 @@ public static class ScreenCaptureService
 {
     public static BitmapSource Capture(Rect bounds, params Window[] hideDuringCapture)
     {
+        var priorVisibility = hideDuringCapture
+            .Select(w => (Window: w, Visibility: w.Visibility))
+            .ToArray();
+
         foreach (var window in hideDuringCapture)
         {
             window.Visibility = Visibility.Hidden;
@@ -48,9 +52,9 @@ public static class ScreenCaptureService
         }
         finally
         {
-            foreach (var window in hideDuringCapture)
+            foreach (var (window, visibility) in priorVisibility)
             {
-                window.Visibility = Visibility.Visible;
+                window.Visibility = visibility;
             }
         }
     }

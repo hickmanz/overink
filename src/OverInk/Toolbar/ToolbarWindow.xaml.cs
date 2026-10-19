@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -19,8 +19,10 @@ public partial class ToolbarWindow : Window
     private bool _dragging;
     private bool _recordingHotkey;
     private bool _syncingSettingsUi;
+    private bool _vertical;
+    private Style? _dividerStyle;
 
-    public event EventHandler? CaptureRequested;
+    public event EventHandler<CaptureRequestedEventArgs>? CaptureRequested;
     public event EventHandler? HideRequested;
     public event EventHandler? BoundsChanged;
     public event EventHandler? PairingRequested;
@@ -42,14 +44,22 @@ public partial class ToolbarWindow : Window
         Top = session.Settings.Current.ToolbarTop;
         ThicknessSlider.Value = session.PenThickness;
 
+        _dividerStyle = (Style)FindResource("ToolbarDivider");
+        if (session.Settings.Current.ToolbarVertical)
+        {
+            SetVertical(true, keepGripInPlace: false);
+        }
+
         _session.Changed += SyncFromSession;
         _session.UndoStack.Changed += (_, _) => SyncFromSession();
         SyncFromSession();
         RefreshHotkeyDisplay();
+        RefreshCaptureButtonHint();
 
         LocationChanged += (_, _) =>
         {
             SavePosition();
+            UpdatePopupPlacement();
             BoundsChanged?.Invoke(this, EventArgs.Empty);
         };
 
@@ -130,9 +140,9 @@ public partial class ToolbarWindow : Window
     public void ClampToVisibleScreen()
     {
         var dips = MonitorHelper.GetPrimaryMonitorGeometry().Dips;
-        if (Left + Width > dips.Right)
+        if (Left + ActualWidth > dips.Right)
         {
-            Left = dips.Right - Width - 16;
+            Left = dips.Right - ActualWidth - 16;
         }
 
         if (Top + ActualHeight > dips.Bottom)
@@ -155,18 +165,43 @@ public partial class ToolbarWindow : Window
     {
         UpdateDrawToggle();
         ThicknessSlider.Value = _session.PenThickness;
+        if (PressureCheck.IsChecked != _session.PressureSensitive)
+        {
+            PressureCheck.IsChecked = _session.PressureSensitive;
+        }
+
         UpdateToolButtons();
         UpdateColorSwatches();
+        UpdateStrokeVisuals();
+    }
+
+    /// <summary>
+    /// The stroke button and its popover preview show a curved line whose thickness tracks the
+    /// width setting (1–20 maps to 1.25–8 units on the 28x24 icon grid, same as the iPad dock).
+    /// </summary>
+    private void UpdateStrokeVisuals()
+    {
+        if (StrokeIconPath is null || StrokePreviewPath is null || ThicknessValue is null)
+        {
+            return;
+        }
+
+        var width = Math.Clamp(ThicknessSlider.Value, 1, 20);
+        var units = 1.25 + (width - 1) / 19.0 * 6.75;
+        StrokeIconPath.StrokeThickness = units;
+        StrokePreviewPath.StrokeThickness = units;
+        StrokePreviewPath.Stroke = new SolidColorBrush(_session.PenColor);
+        ThicknessValue.Text = ((int)Math.Round(width)).ToString();
     }
 
     private void UpdateDrawToggle()
     {
         var drawing = _session.Mode == InteractionMode.Draw;
         DrawToggle.IsChecked = drawing;
-        DrawToggle.Content = drawing ? "●  Drawing" : "Pass-through";
+        DrawToggle.Content = _vertical ? "Draw" : drawing ? "Drawing" : "Draw mode";
         DrawToggle.ToolTip = drawing
-            ? "Drawing on screen — ink captures pointer (Esc or toggle for pass-through)"
-            : "Pass-through — use apps normally (toggle on to draw)";
+            ? "Drawing on screen — Esc or toggle off to use apps normally"
+            : "Turn on to sketch on screen (Esc turns off when drawing)";
     }
 
     private void UpdateToolButtons()
@@ -192,7 +227,7 @@ public partial class ToolbarWindow : Window
 
             var swatch = new ToggleButton
             {
-                Style = (Style)FindResource("ColorSwatch"),
+                Style = (Style)FindResource("GridSwatch"),
                 Background = new SolidColorBrush(color),
                 Tag = hex,
                 ToolTip = hex
@@ -215,6 +250,8 @@ public partial class ToolbarWindow : Window
 
         CustomColorButton.Background = new SolidColorBrush(_session.PenColor);
         CustomColorButton.IsChecked = !PresetPalette.IsPreset(_session.PenColor);
+        ColorDot.Fill = new SolidColorBrush(_session.PenColor);
+        UpdateStrokeVisuals();
     }
 
     private void SavePosition()
@@ -224,8 +261,141 @@ public partial class ToolbarWindow : Window
         _session.PersistSettings();
     }
 
+    /// <summary>
+    /// Lays the dock out horizontally or vertically. The double-clicked grip stays under the cursor
+    /// (when <paramref name="keepGripInPlace"/>) so the bar appears to rotate around the handle.
+    /// </summary>
+    private void SetVertical(bool vertical, bool keepGripInPlace)
+    {
+        var before = keepGripInPlace ? GripCenterOnScreen() : (Point?)null;
+        _vertical = vertical;
+
+        var panelOrientation = vertical ? Orientation.Vertical : Orientation.Horizontal;
+        DockRow.Orientation = panelOrientation;
+        BrandGroup.Orientation = panelOrientation;
+        BrandGroup.Margin = vertical ? new Thickness(0, 2, 0, 4) : new Thickness(2, 0, 4, 0);
+        ToolPanel.Orientation = panelOrientation;
+        ColorGroup.Orientation = panelOrientation;
+        UndoGroup.Orientation = panelOrientation;
+        CaptureGroup.Orientation = panelOrientation;
+        SettingsGroup.Orientation = panelOrientation;
+        CaptureSplitPanel.Orientation = panelOrientation;
+
+        // Settings panel opens beside a vertical dock instead of under it.
+        RootStack.Orientation = panelOrientation == Orientation.Vertical ? Orientation.Horizontal : Orientation.Vertical;
+        SettingsPanel.Margin = vertical ? new Thickness(8, 0, 0, 0) : new Thickness(0, 8, 0, 0);
+        SettingsPanel.VerticalAlignment = VerticalAlignment.Top;
+        StatusText.MaxWidth = vertical ? 220 : double.PositiveInfinity;
+        StatusText.Margin = vertical ? new Thickness(8, 4, 4, 0) : new Thickness(4, 6, 4, 0);
+
+        // Grip: swap footprint and rotate the dots to match the bar direction.
+        DragGrip.Width = vertical ? 34 : 24;
+        DragGrip.Height = vertical ? 24 : 34;
+        GripIcon.RenderTransform = vertical ? new RotateTransform(90) : Transform.Identity;
+
+        // Dividers become horizontal rules in a vertical dock.
+        foreach (var child in DockRow.Children.OfType<Border>())
+        {
+            if (!ReferenceEquals(child.Style, _dividerStyle))
+            {
+                continue;
+            }
+
+            if (vertical)
+            {
+                child.Width = 24;
+                child.Height = 1;
+                child.Margin = new Thickness(0, 7, 0, 7);
+                child.HorizontalAlignment = HorizontalAlignment.Center;
+            }
+            else
+            {
+                child.ClearValue(WidthProperty);
+                child.ClearValue(HeightProperty);
+                child.ClearValue(MarginProperty);
+                child.ClearValue(HorizontalAlignmentProperty);
+            }
+        }
+
+        // Draw pill: compact "Draw" chip that is the same width as the buttons below it.
+        DrawToggle.MinWidth = vertical ? 0 : 104;
+        DrawToggle.Width = vertical ? 36 : double.NaN;
+        DrawToggle.Padding = vertical ? new Thickness(0) : new Thickness(14, 0, 14, 0);
+        DrawToggle.FontSize = vertical ? 11 : 12.5;
+        UpdateDrawToggle();
+
+        // Capture: camera-only button stacked over the chevron.
+        CaptureLabel.Visibility = vertical ? Visibility.Collapsed : Visibility.Visible;
+        CaptureSplit.Margin = vertical ? new Thickness(1, 4, 1, 1) : new Thickness(4, 0, 0, 0);
+        CaptureMainButton.MinWidth = vertical ? 34 : 68;
+        CaptureMainButton.Padding = vertical ? new Thickness(0) : new Thickness(12, 0, 12, 0);
+        CaptureMenuButton.MinWidth = vertical ? 34 : 28;
+        CaptureMenuButton.Padding = vertical ? new Thickness(0) : new Thickness(6, 0, 6, 0);
+        CaptureMenuButton.Height = vertical ? 24 : 34;
+        CaptureSplitDivider.Width = vertical ? double.NaN : 1;
+        CaptureSplitDivider.Height = vertical ? 1 : double.NaN;
+        CaptureSplitDivider.Margin = vertical ? new Thickness(7, 0, 7, 0) : new Thickness(0, 7, 0, 7);
+
+        UpdatePopupPlacement();
+
+        if (before is { } anchor)
+        {
+            UpdateLayout();
+            var after = GripCenterOnScreen();
+            Left += anchor.X - after.X;
+            Top += anchor.Y - after.Y;
+            ClampToVisibleScreen();
+        }
+
+        if (_session.Settings.Current.ToolbarVertical != vertical)
+        {
+            _session.Settings.Current.ToolbarVertical = vertical;
+            _session.PersistSettings();
+        }
+
+        BoundsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Center of the drag grip in screen DIPs (same space as Left/Top).</summary>
+    private Point GripCenterOnScreen()
+    {
+        var device = DragGrip.PointToScreen(new Point(DragGrip.ActualWidth / 2, DragGrip.ActualHeight / 2));
+        var source = PresentationSource.FromVisual(this);
+        return source?.CompositionTarget is { } target
+            ? target.TransformFromDevice.Transform(device)
+            : device;
+    }
+
+    /// <summary>Popovers open above a horizontal bar, and to the open side of a vertical one.</summary>
+    private void UpdatePopupPlacement()
+    {
+        PlacementMode placement;
+        if (!_vertical)
+        {
+            placement = PlacementMode.Top;
+        }
+        else
+        {
+            var dips = MonitorHelper.GetPrimaryMonitorGeometry().Dips;
+            var center = Left + ActualWidth / 2;
+            placement = center > (dips.Left + dips.Right) / 2 ? PlacementMode.Left : PlacementMode.Right;
+        }
+
+        ColorPickerPopup.Placement = placement;
+        StrokePopup.Placement = placement;
+    }
+
     private void DragBar_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (e.ClickCount >= 2)
+        {
+            _dragging = false;
+            ((UIElement)sender).ReleaseMouseCapture();
+            SetVertical(!_vertical, keepGripInPlace: true);
+            e.Handled = true;
+            return;
+        }
+
         _dragging = true;
         _dragStart = e.GetPosition(this);
         ((UIElement)sender).CaptureMouse();
@@ -283,8 +453,27 @@ public partial class ToolbarWindow : Window
 
     private void CustomColorButton_Click(object sender, RoutedEventArgs e)
     {
-        ColorPicker.SetColor(_session.PenColor);
-        ColorPickerPopup.IsOpen = true;
+        // Expand / collapse the wheel inside the color popover.
+        var show = ColorPicker.Visibility != Visibility.Visible;
+        if (show)
+        {
+            ColorPicker.SetColor(_session.PenColor);
+        }
+
+        ColorPicker.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        // The button's IsChecked mirrors "color is not a preset"; undo the click's own toggle.
+        UpdateColorSwatches();
+    }
+
+    private void ColorPopup_Opened(object? sender, EventArgs e)
+    {
+        ColorPicker.Visibility = Visibility.Collapsed;
+        UpdateColorSwatches();
+    }
+
+    private void ColorPopup_Closed(object? sender, EventArgs e)
+    {
+        ColorPicker.Visibility = Visibility.Collapsed;
     }
 
     private void ColorPicker_ColorChanged(object sender, Color color)
@@ -294,8 +483,20 @@ public partial class ToolbarWindow : Window
         UpdateColorSwatches();
     }
 
+    private void PressureCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        _session.SetPressureSensitive(PressureCheck.IsChecked == true);
+        _session.PersistSettings();
+    }
+
     private void ThicknessSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
+        UpdateStrokeVisuals();
         if (!IsLoaded)
         {
             return;
@@ -308,14 +509,78 @@ public partial class ToolbarWindow : Window
     private void Undo_Click(object sender, RoutedEventArgs e) => _overlay.Undo();
     private void Redo_Click(object sender, RoutedEventArgs e) => _overlay.Redo();
     private void Clear_Click(object sender, RoutedEventArgs e) => _overlay.ClearAll();
-    private void Capture_Click(object sender, RoutedEventArgs e) => CaptureRequested?.Invoke(this, EventArgs.Empty);
+    private void Capture_Click(object sender, RoutedEventArgs e) =>
+        CaptureRequested?.Invoke(this, new CaptureRequestedEventArgs { Kind = CaptureRequestKind.Default });
+
+    private void CaptureMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu
+        {
+            Background = (Brush)FindResource("ShellBrush"),
+            Foreground = (Brush)FindResource("TextBrush")
+        };
+
+        var auto = new MenuItem
+        {
+            Header = "Auto — active region if set, else full screen",
+            IsCheckable = true,
+            IsChecked = _session.Settings.Current.ToolbarCaptureMode == CaptureToolbarMode.Auto
+        };
+        auto.Click += (_, _) => SetCaptureMode(CaptureToolbarMode.Auto);
+        menu.Items.Add(auto);
+
+        var full = new MenuItem
+        {
+            Header = "Full screen",
+            IsCheckable = true,
+            IsChecked = _session.Settings.Current.ToolbarCaptureMode == CaptureToolbarMode.FullScreen
+        };
+        full.Click += (_, _) => SetCaptureMode(CaptureToolbarMode.FullScreen);
+        menu.Items.Add(full);
+
+        menu.Items.Add(new Separator());
+
+        var pick = new MenuItem { Header = "Select region for this capture…" };
+        pick.Click += (_, _) =>
+            CaptureRequested?.Invoke(this, new CaptureRequestedEventArgs { Kind = CaptureRequestKind.PickRegion });
+        menu.Items.Add(pick);
+
+        menu.PlacementTarget = CaptureMenuButton;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void SetCaptureMode(CaptureToolbarMode mode)
+    {
+        _session.Settings.Current.ToolbarCaptureMode = mode;
+        _session.Settings.Save();
+        RefreshCaptureButtonHint();
+    }
+
+    public void RefreshCaptureButtonHint()
+    {
+        if (CaptureMainButton is null)
+        {
+            return;
+        }
+
+        var regionOn = _session.Settings.Current.RemoteRegionEnabled;
+        var mode = _session.Settings.Current.ToolbarCaptureMode;
+        CaptureMainButton.ToolTip = mode switch
+        {
+            CaptureToolbarMode.FullScreen => "Capture full screen with ink",
+            CaptureToolbarMode.Auto when regionOn =>
+                "Capture active region with ink (▾ for full screen or one-off region)",
+            CaptureToolbarMode.Auto => "Capture full screen with ink (uses active stream region when region is on)",
+            _ => "Capture with ink"
+        };
+    }
 
     private void SetRegion_Click(object sender, RoutedEventArgs e) => SetRegionRequested?.Invoke(this, EventArgs.Empty);
 
     public void SetCaptureRegionActive(bool active)
     {
         SetRegionButton.IsChecked = active;
-        SetRegionButton.Content = active ? "Region on" : "Set region";
         SetRegionButton.ToolTip = active
             ? "Region on — click to turn off (full-screen remote stream)"
             : "Click to drag a capture region for remote clients";
@@ -358,6 +623,11 @@ public partial class ToolbarWindow : Window
         }
 
         BoundsChanged?.Invoke(this, EventArgs.Empty);
+        if (opening)
+        {
+            // The panel can push the window past the screen edge (e.g. beside a vertical dock on the right).
+            Dispatcher.BeginInvoke(ClampToVisibleScreen, System.Windows.Threading.DispatcherPriority.Loaded);
+        }
     }
 
     private void RecordHotkeyButton_Click(object sender, RoutedEventArgs e)
@@ -403,7 +673,7 @@ public partial class ToolbarWindow : Window
     {
         _recordingHotkey = false;
         _session.IsHotkeyCaptureActive = false;
-        RecordHotkeyButton.Content = "Change shortcut";
+        RecordHotkeyButton.Content = "Change";
         HotkeyHintText.Text = "Esc turns draw off · Ctrl+Z undo while draw is on";
         HotkeyChanged?.Invoke(this, new HotkeyChangedEventArgs(modifiers, virtualKey));
         RefreshHotkeyDisplay();
@@ -413,7 +683,7 @@ public partial class ToolbarWindow : Window
     {
         _recordingHotkey = false;
         _session.IsHotkeyCaptureActive = false;
-        RecordHotkeyButton.Content = "Change shortcut";
+        RecordHotkeyButton.Content = "Change";
         HotkeyHintText.Text = "Esc turns draw off · Ctrl+Z undo while draw is on";
     }
 }

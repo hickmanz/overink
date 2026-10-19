@@ -30,6 +30,8 @@ public partial class ColorPickerControl : UserControl
 
     public void SetColor(Color color)
     {
+        // Don't depend on Loaded having fired: this control starts collapsed inside a popup.
+        EnsureWheel();
         (_hue, _sat, _val) = ColorSpaces.RgbToHsv(color);
         _suppressEvents = true;
         BrightnessSlider.Value = _val * 100;

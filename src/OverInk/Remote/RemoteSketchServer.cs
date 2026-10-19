@@ -49,6 +49,37 @@ public sealed class RemoteSketchServer : IDisposable
         _frameStreamer = new FrameStreamer(overlay, () => _settings.Current);
         _frameStreamer.FrameReady += OnFrameReady;
         _settings.RemoteStreamSettingsChanged += () => _frameStreamer.RequestImmediateFrame();
+        _overlay.RemoteStrokesRemoved += ids =>
+            BroadcastControl(Wrap("strokesRemoved", new RemoteStrokesRemoved(ids.ToArray())), null);
+        _overlay.InkCleared += () => BroadcastControl(Wrap("cleared", new RemoteCleared()), null);
+        _overlay.RemoteStrokesAdded += OnOverlayStrokesAdded;
+    }
+
+    private void OnOverlayStrokesAdded(IReadOnlyList<(Guid Id, System.Windows.Ink.Stroke Stroke)> strokes)
+    {
+        var dips = CaptureRegionHelper.GetStreamDips(_settings.Current);
+        var snapshots = new List<RemoteStrokeSnapshot>(strokes.Count);
+        foreach (var (id, stroke) in strokes)
+        {
+            var points = stroke.StylusPoints;
+            var pts = new float[points.Count * 3];
+            for (var i = 0; i < points.Count; i++)
+            {
+                var (nx, ny) = CoordinateMapper.DipsToNormalized(new Point(points[i].X, points[i].Y), dips);
+                pts[i * 3] = (float)nx;
+                pts[i * 3 + 1] = (float)ny;
+                pts[i * 3 + 2] = points[i].PressureFactor;
+            }
+
+            snapshots.Add(new RemoteStrokeSnapshot(
+                id,
+                ColorHex.ToRgbHex(stroke.DrawingAttributes.Color),
+                stroke.DrawingAttributes.Width,
+                pts,
+                stroke.DrawingAttributes.IgnorePressure));
+        }
+
+        BroadcastControl(Wrap("strokesAdded", new RemoteStrokesAdded(snapshots)), null);
     }
 
     public event Action<int>? ClientCountChanged;
@@ -425,6 +456,9 @@ public sealed class RemoteSketchServer : IDisposable
             case "setSize":
                 ApplySetSize(json);
                 break;
+            case "setPressure":
+                ApplySetPressure(json);
+                break;
             case "undo":
                 await Application.Current.Dispatcher.InvokeAsync(() => _overlay.Undo(client.ClientId)).Task.ConfigureAwait(false);
                 break;
@@ -495,6 +529,22 @@ public sealed class RemoteSketchServer : IDisposable
         });
     }
 
+    private void ApplySetPressure(string json)
+    {
+        var msg = RemoteJson.Deserialize<RemoteSetPressure>(json);
+        if (msg is null)
+        {
+            return;
+        }
+
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            _session.SetPressureSensitive(msg.Enabled);
+            _session.PersistSettings();
+            BroadcastState();
+        });
+    }
+
     private async Task DispatchStrokeBeginAsync(RemoteConnectedClient client, string json)
     {
         var msg = RemoteJson.Deserialize<RemoteStrokeBegin>(json);
@@ -517,8 +567,8 @@ public sealed class RemoteSketchServer : IDisposable
                 Color = color,
                 Width = thickness,
                 Height = thickness,
-                FitToCurve = true,
-                IgnorePressure = false
+                FitToCurve = false,
+                IgnorePressure = !_session.PressureSensitive
             };
             _strokeSource.RaiseStrokeBegan(new RemoteStrokeBeginEventArgs
             {
@@ -654,7 +704,8 @@ public sealed class RemoteSketchServer : IDisposable
             {
                 AuthorId = client.ClientId,
                 PointsDips = points.ToArray(),
-                EraserSize = msg.Size
+                EraserSize = msg.Size,
+                Whole = msg.Whole == true
             });
         }, DispatcherPriority.Input);
 
@@ -706,7 +757,8 @@ public sealed class RemoteSketchServer : IDisposable
             _session.Mode.ToString(),
             stream.Width,
             stream.Height,
-            _settings.Current.RemoteRegionEnabled);
+            _settings.Current.RemoteRegionEnabled,
+            _session.PressureSensitive);
     }
 
     private string PickColor()

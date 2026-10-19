@@ -12,6 +12,7 @@ public sealed class SketchSession
         Tool = settings.Current.LastTool;
         PenColor = settings.Current.GetPenColor();
         PenThickness = settings.Current.PenThickness;
+        PressureSensitive = settings.Current.PressureSensitive;
     }
 
     public SettingsService Settings { get; }
@@ -23,7 +24,17 @@ public sealed class SketchSession
     public Color PenColor { get; private set; }
     public double PenThickness { get; private set; }
 
+    /// <summary>Whether pen pressure changes stroke width (off = constant width).</summary>
+    public bool PressureSensitive { get; private set; }
+
     public event Action? Changed;
+
+    public void SetPressureSensitive(bool enabled)
+    {
+        PressureSensitive = enabled;
+        Settings.Current.PressureSensitive = enabled;
+        Notify();
+    }
 
     public void SetTool(SketchTool tool)
     {

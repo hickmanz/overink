@@ -18,10 +18,13 @@ public partial class OverlayWindow : Window
     private readonly SketchSession _session;
     private readonly IStrokeSource _remoteStrokeSource;
     private readonly Dictionary<Guid, Stroke> _liveRemoteStrokes = new();
+    private readonly Dictionary<Guid, StylusPointCollection> _liveRemoteRaw = new();
     private readonly Dictionary<Guid, UIElement> _remoteShapePreviews = new();
     private readonly Dictionary<Guid, string> _strokeAuthors = new();
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Stroke, object> _remoteStrokeIds = new();
     private long _inkRevision;
     private bool _recordingUndo;
+    private bool _applyingUndo;
     private bool _shapeDragging;
     private Point _shapeStart;
     private UIElement? _shapePreview;
@@ -35,6 +38,14 @@ public partial class OverlayWindow : Window
         InitializeComponent();
 
         InkSurface.Strokes.StrokesChanged += OnStrokesChanged;
+        InkSurface.PreviewMouseDown += OnInkPreviewDown;
+        InkSurface.PreviewStylusDown += OnInkPreviewDown;
+        InkSurface.PreviewTouchDown += OnInkPreviewDown;
+        InkSurface.StrokeCollected += (_, e) =>
+        {
+            StrokeSmoother.Apply(e.Stroke);
+            BumpInkRevision();
+        };
         ShapeLayer.MouseLeftButtonDown += OnShapeMouseDown;
         ShapeLayer.MouseMove += OnShapeMouseMove;
         ShapeLayer.MouseLeftButtonUp += OnShapeMouseUp;
@@ -61,6 +72,81 @@ public partial class OverlayWindow : Window
     public Panel ShapeLayerPanel => ShapeLayer;
 
     public long InkRevision => Interlocked.Read(ref _inkRevision);
+
+    /// <summary>Raised (on the UI thread) when strokes that came from a remote client leave the canvas
+    /// (erase, undo, clear...) so remote clients can drop their local vector copies.</summary>
+    public event Action<IReadOnlyList<Guid>>? RemoteStrokesRemoved;
+
+    /// <summary>Raised when strokes a remote client knows by id (re)appear on the canvas: pieces left by a partial
+    /// erase, or strokes restored by undo/redo. The remote client replaces/creates its vector copies from these.</summary>
+    public event Action<IReadOnlyList<(Guid Id, Stroke Stroke)>>? RemoteStrokesAdded;
+
+    /// <summary>Raised after <see cref="ClearAll"/>.</summary>
+    public event Action? InkCleared;
+
+    private List<Guid> RemoteIdsOf(StrokeCollection strokes)
+    {
+        var ids = new List<Guid>();
+        foreach (var stroke in strokes)
+        {
+            if (_remoteStrokeIds.TryGetValue(stroke, out var id))
+            {
+                ids.Add((Guid)id);
+            }
+        }
+
+        return ids;
+    }
+
+    private void PublishRemoteStrokesAdded(IEnumerable<Stroke> strokes)
+    {
+        if (RemoteStrokesAdded is not { } handler)
+        {
+            return;
+        }
+
+        var list = new List<(Guid, Stroke)>();
+        foreach (var stroke in strokes)
+        {
+            if (_remoteStrokeIds.TryGetValue(stroke, out var id))
+            {
+                list.Add(((Guid)id, stroke));
+            }
+        }
+
+        if (list.Count > 0)
+        {
+            handler(list);
+        }
+    }
+
+    /// <summary>
+    /// Gives each piece produced by erasing a remote client's stroke a fresh id (pieces are matched to the
+    /// original by bounds), so remote clients can track them for later erase/undo.
+    /// </summary>
+    private void AssignPieceIds(IEnumerable<Stroke> originals, IEnumerable<Stroke> pieces)
+    {
+        var originalsWithIds = originals.Where(o => _remoteStrokeIds.TryGetValue(o, out _)).ToList();
+        if (originalsWithIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var piece in pieces)
+        {
+            if (_remoteStrokeIds.TryGetValue(piece, out _))
+            {
+                continue;
+            }
+
+            var bounds = piece.GetBounds();
+            bounds.Inflate(1, 1);
+            if (originalsWithIds.Any(o => o.GetBounds().Contains(bounds) || o.GetBounds().IntersectsWith(bounds)))
+            {
+                _remoteStrokeIds.Add(piece, Guid.NewGuid());
+            }
+        }
+    }
 
     public void SetToolbarWindow(Window toolbarWindow) => _toolbarWindow = toolbarWindow;
 
@@ -135,10 +221,15 @@ public partial class OverlayWindow : Window
         var isShape = _session.Tool is SketchTool.Line or SketchTool.Arrow or SketchTool.Rectangle or SketchTool.Ellipse;
         InkSurface.EditingMode = _session.Tool switch
         {
-            SketchTool.Eraser => InkCanvasEditingMode.EraseByStroke,
+            // Default: erase only the part under the eraser. Holding Ctrl while pressing switches to
+            // whole-stroke erase (see OnInkPreviewDown).
+            SketchTool.Eraser => InkCanvasEditingMode.EraseByPoint,
             SketchTool.Pen => InkCanvasEditingMode.Ink,
             _ => InkCanvasEditingMode.None
         };
+
+        var eraserDiameter = EraserDiameter(_session.PenThickness);
+        InkSurface.EraserShape = new EllipseStylusShape(eraserDiameter, eraserDiameter);
 
         InkSurface.IsHitTestVisible = _session.Mode == InteractionMode.Draw && !isShape;
         ShapeLayer.IsHitTestVisible = _session.Mode == InteractionMode.Draw && isShape;
@@ -148,16 +239,62 @@ public partial class OverlayWindow : Window
             Color = _session.PenColor,
             Width = _session.PenThickness,
             Height = _session.PenThickness,
-            FitToCurve = true,
-            IgnorePressure = false
+            FitToCurve = false, // smoothing is done by StrokeSmoother on stroke completion
+            IgnorePressure = !_session.PressureSensitive
         };
         InkSurface.DefaultDrawingAttributes = attributes;
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    private const int VkControl = 0x11;
+
+    /// <summary>Eraser diameter in DIPs; the iPad client uses the same formula.</summary>
+    private static double EraserDiameter(double penThickness) => Math.Max(12, penThickness * 2);
+
+    /// <summary>Ctrl held when pressing with the eraser = erase whole strokes instead of just the touched part.</summary>
+    private void OnInkPreviewDown(object? sender, InputEventArgs e)
+    {
+        if (_session.Tool != SketchTool.Eraser)
+        {
+            return;
+        }
+
+        var ctrl = (GetAsyncKeyState(VkControl) & 0x8000) != 0;
+        InkSurface.EditingMode = ctrl ? InkCanvasEditingMode.EraseByStroke : InkCanvasEditingMode.EraseByPoint;
+    }
+
     private void OnStrokesChanged(object? sender, StrokeCollectionChangedEventArgs e)
     {
+        if (e.Removed.Count > 0)
+        {
+            var ids = RemoteIdsOf(e.Removed);
+            if (ids.Count > 0)
+            {
+                RemoteStrokesRemoved?.Invoke(ids);
+            }
+        }
+
+        // Undo/redo can bring back strokes a remote client no longer has a vector copy of.
+        if (_applyingUndo && e.Added.Count > 0)
+        {
+            PublishRemoteStrokesAdded(e.Added);
+        }
+
         if (_recordingUndo)
         {
+            return;
+        }
+
+        // Erase-by-point on the PC: the canvas swaps a stroke for its remaining pieces in one change.
+        // Record that as a single undo step and give pieces of remote strokes ids so the iPad can mirror them.
+        if (e.Added.Count > 0 && e.Removed.Count > 0)
+        {
+            AssignPieceIds(e.Removed, e.Added);
+            PublishRemoteStrokesAdded(e.Added);
+            _session.UndoStack.Push(new InkReplaceAction(InkSurface, e.Removed, e.Added, UndoAuthors.Host));
+            BumpInkRevision();
             return;
         }
 
@@ -223,8 +360,10 @@ public partial class OverlayWindow : Window
         EnsureVisibleForRemoteInk();
 
         var points = new StylusPointCollection { new StylusPoint(e.FirstPointDips.X, e.FirstPointDips.Y, e.Pressure) };
-        var stroke = new Stroke(points, e.Attributes.Clone());
+        var stroke = new Stroke(points.Clone(), e.Attributes.Clone());
         _liveRemoteStrokes[e.Id] = stroke;
+        _liveRemoteRaw[e.Id] = points;
+        _remoteStrokeIds.Add(stroke, e.Id);
         _strokeAuthors[e.Id] = e.AuthorId;
 
         _recordingUndo = true;
@@ -240,15 +379,19 @@ public partial class OverlayWindow : Window
 
     private void OnRemoteStrokePoints(object? sender, RemoteStrokePointsEventArgs e)
     {
-        if (!_liveRemoteStrokes.TryGetValue(e.Id, out var stroke))
+        if (!_liveRemoteStrokes.TryGetValue(e.Id, out var stroke) ||
+            !_liveRemoteRaw.TryGetValue(e.Id, out var raw))
         {
             return;
         }
 
+        raw.Add(e.Points);
+
         _recordingUndo = true;
         try
         {
-            stroke.StylusPoints.Add(e.Points);
+            // Re-smooth from the raw samples each batch so the stroke looks smooth while it is drawn.
+            stroke.StylusPoints = StrokeSmoother.Smooth(raw, stroke.DrawingAttributes.Width) ?? raw.Clone();
         }
         finally
         {
@@ -267,6 +410,19 @@ public partial class OverlayWindow : Window
         }
 
         _strokeAuthors.Remove(e.Id);
+        _recordingUndo = true;
+        try
+        {
+            if (_liveRemoteRaw.Remove(e.Id, out var raw))
+            {
+                stroke.StylusPoints = StrokeSmoother.Smooth(raw, stroke.DrawingAttributes.Width) ?? raw.Clone();
+            }
+        }
+        finally
+        {
+            _recordingUndo = false;
+        }
+
         var batch = new StrokeCollection { stroke };
         _session.UndoStack.Push(new InkStrokeAction(InkSurface, batch, added: true, e.AuthorId));
         BumpInkRevision();
@@ -280,6 +436,7 @@ public partial class OverlayWindow : Window
         }
 
         _strokeAuthors.Remove(e.Id);
+        _liveRemoteRaw.Remove(e.Id);
         _recordingUndo = true;
         try
         {
@@ -324,24 +481,122 @@ public partial class OverlayWindow : Window
             return;
         }
 
-        var hits = InkSurface.Strokes.HitTest(e.PointsDips, (int)Math.Max(1, e.EraserSize));
+        // NOTE: Strokes.HitTest(IEnumerable<Point>, int) is a *lasso* test (percentage inside polygon), which
+        // never matches a thin eraser path. Use a stylus-shaped hit test instead.
+        var diameter = EraserDiameter(e.EraserSize);
+        var shape = new EllipseStylusShape(diameter, diameter);
+        var found = e.PointsDips.Length == 1
+            ? InkSurface.Strokes.HitTest(e.PointsDips[0], diameter)
+            : InkSurface.Strokes.HitTest(e.PointsDips, shape);
+
+        // Strokes still being drawn by a remote client must not be swapped out underneath it.
+        var hits = new StrokeCollection(found.Where(s => !_liveRemoteStrokes.ContainsValue(s)));
         if (hits.Count > 0)
         {
-            _recordingUndo = true;
-            try
+            if (e.Whole)
             {
-                InkSurface.Strokes.Remove(hits);
+                EraseWholeStrokes(hits, e.AuthorId);
             }
-            finally
+            else
             {
-                _recordingUndo = false;
+                ErasePartOfStrokes(hits, e.PointsDips, shape, e.AuthorId);
             }
-
-            _session.UndoStack.Push(new InkStrokeAction(InkSurface, hits, added: false, e.AuthorId));
-            BumpInkRevision();
         }
 
-        RemoveIntersectingShapes(e.PointsDips, e.EraserSize, e.AuthorId);
+        RemoveIntersectingShapes(e.PointsDips, diameter / 2, e.AuthorId);
+    }
+
+    private void EraseWholeStrokes(StrokeCollection hits, string authorId)
+    {
+        _recordingUndo = true;
+        try
+        {
+            InkSurface.Strokes.Remove(hits);
+        }
+        finally
+        {
+            _recordingUndo = false;
+        }
+
+        _session.UndoStack.Push(new InkStrokeAction(InkSurface, hits, added: false, authorId));
+        BumpInkRevision();
+    }
+
+    /// <summary>Cuts the touched part out of each stroke, keeping the rest as new strokes (one undo step).</summary>
+    private void ErasePartOfStrokes(StrokeCollection hits, Point[] path, StylusShape eraser, string authorId)
+    {
+        var removed = new StrokeCollection();
+        var added = new StrokeCollection();
+
+        // A tap is a single point; give the eraser path a (tiny) extent so it is a valid path.
+        if (path.Length == 1)
+        {
+            path = [path[0], new Point(path[0].X + 0.01, path[0].Y)];
+        }
+
+        foreach (var stroke in hits)
+        {
+            StrokeCollection pieces;
+            try
+            {
+                pieces = stroke.GetEraseResult(path, eraser);
+            }
+            catch (ArgumentException)
+            {
+                continue;
+            }
+
+            // Hit test said touched but nothing was actually cut away.
+            if (pieces.Count == 1 && pieces[0].StylusPoints.Count == stroke.StylusPoints.Count)
+            {
+                continue;
+            }
+
+            var keep = pieces.Where(p => !IsStub(p)).ToList();
+            removed.Add(stroke);
+            foreach (var piece in keep)
+            {
+                added.Add(piece);
+            }
+
+            AssignPieceIds([stroke], keep);
+        }
+
+        if (removed.Count == 0)
+        {
+            return;
+        }
+
+        _recordingUndo = true;
+        try
+        {
+            InkSurface.Strokes.Remove(removed);
+            if (added.Count > 0)
+            {
+                InkSurface.Strokes.Add(added);
+            }
+        }
+        finally
+        {
+            _recordingUndo = false;
+        }
+
+        PublishRemoteStrokesAdded(added);
+        _session.UndoStack.Push(new InkReplaceAction(InkSurface, removed, added, authorId));
+        BumpInkRevision();
+    }
+
+    /// <summary>A leftover sliver shorter than the pen is just a dot; drop it.</summary>
+    private static bool IsStub(Stroke piece)
+    {
+        var points = piece.StylusPoints;
+        var length = 0.0;
+        for (var i = 1; i < points.Count; i++)
+        {
+            length += Math.Sqrt(Math.Pow(points[i].X - points[i - 1].X, 2) + Math.Pow(points[i].Y - points[i - 1].Y, 2));
+        }
+
+        return length < piece.DrawingAttributes.Width * 0.75;
     }
 
     private void RemoveIntersectingShapes(Point[] points, double eraserSize, string authorId)
@@ -351,31 +606,12 @@ public partial class OverlayWindow : Window
             return;
         }
 
-        var bounds = new Rect(points[0], points[0]);
-        foreach (var p in points.Skip(1))
-        {
-            bounds.Union(p);
-        }
-
-        bounds.Inflate(eraserSize, eraserSize);
-        var toRemove = ShapeLayer.Children.Cast<UIElement>().Where(el =>
-        {
-            var left = Canvas.GetLeft(el);
-            var top = Canvas.GetTop(el);
-            if (double.IsNaN(left))
-            {
-                left = 0;
-            }
-
-            if (double.IsNaN(top))
-            {
-                top = 0;
-            }
-
-            var w = (el as FrameworkElement)?.ActualWidth ?? 0;
-            var h = (el as FrameworkElement)?.ActualHeight ?? 0;
-            return bounds.IntersectsWith(new Rect(left, top, Math.Max(1, w), Math.Max(1, h)));
-        }).ToList();
+        // eraserSize here is the eraser *radius*. Test against each shape's actual outline (lines and arrows are
+        // Canvases with absolutely positioned children, so a bounding-box test on the element never hit them).
+        var toRemove = ShapeLayer.Children.Cast<UIElement>()
+            .Where(el => !ReferenceEquals(el, _shapePreview) && !_remoteShapePreviews.ContainsValue(el))
+            .Where(el => ShapeHitTester.Hits(el, points, eraserSize))
+            .ToList();
 
         foreach (var element in toRemove)
         {
@@ -431,8 +667,30 @@ public partial class OverlayWindow : Window
 
         _session.UndoStack.Clear();
         BumpInkRevision();
+        InkCleared?.Invoke();
     }
 
-    public void Undo(string? authorId = null) => _session.UndoStack.Undo(authorId);
-    public void Redo(string? authorId = null) => _session.UndoStack.Redo(authorId);
+    public void Undo(string? authorId = null) => ApplyUndoRedo(() => _session.UndoStack.Undo(authorId));
+    public void Redo(string? authorId = null) => ApplyUndoRedo(() => _session.UndoStack.Redo(authorId));
+
+    /// <summary>
+    /// Runs an undo/redo step. Changes it makes to the canvas must not be recorded as new undo entries
+    /// (which would clear the redo stack), but remote clients still need to hear about them.
+    /// </summary>
+    private void ApplyUndoRedo(Action step)
+    {
+        _applyingUndo = true;
+        _recordingUndo = true;
+        try
+        {
+            step();
+        }
+        finally
+        {
+            _recordingUndo = false;
+            _applyingUndo = false;
+        }
+
+        BumpInkRevision();
+    }
 }

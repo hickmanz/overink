@@ -4,13 +4,15 @@
 
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 
+        xmlns:toolbar="clr-namespace:OverInk.Toolbar"
+
         Title="OverInk Editor"
 
-        Width="1100"
+        Width="1200"
 
         Height="760"
 
-        MinWidth="640"
+        MinWidth="720"
 
         MinHeight="480"
 
@@ -35,12 +37,6 @@
                     <ToggleButton x:Name="EraserToggle" Content="Eraser" Style="{StaticResource SegBase}"
 
                                   Click="Eraser_Click" Margin="0,0,12,0" />
-
-                    <Border Style="{StaticResource ToolbarDivider}" />
-
-                    <Button Content="Crop" Style="{StaticResource IconGhost}" Click="Crop_Click" ToolTip="Draw crop region" />
-
-                    <Button Content="Apply crop" Style="{StaticResource IconGhost}" Click="ApplyCrop_Click" Margin="0,0,12,0" />
 
                     <Border Style="{StaticResource ToolbarDivider}" />
 
@@ -76,21 +72,67 @@
 
 
 
+        <Border x:Name="ToolsPanel" DockPanel.Dock="Right" Width="236"
+
+                Background="#FF0C0C0E" BorderBrush="{StaticResource BorderBrushMuted}" BorderThickness="1,0,0,0">
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="12,12">
+
+                <StackPanel>
+
+                    <TextBlock Text="Pen" Foreground="{StaticResource TextBrush}" FontSize="12" FontWeight="SemiBold" />
+
+                    <TextBlock Text="Color and stroke for new ink" Style="{StaticResource MutedLabel}" Margin="0,2,0,10" />
+
+                    <toolbar:ColorPickerControl x:Name="EditorColorPicker" HorizontalAlignment="Center" Margin="0,0,0,8" />
+
+                    <TextBlock Text="Size" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,0,0,4" />
+
+                    <Slider x:Name="PenSizeSlider" Minimum="1" Maximum="24" Value="4"
+
+                            Style="{StaticResource StrokeSlider}" ValueChanged="PenSizeSlider_ValueChanged" />
+
+                    <WrapPanel x:Name="PresetSwatchesPanel" Margin="0,10,0,0" />
+
+
+
+                    <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,16,0,16" />
+
+
+
+                    <TextBlock Text="Crop" Foreground="{StaticResource TextBrush}" FontSize="12" FontWeight="SemiBold" />
+
+                    <TextBlock Text="Drag edge handles — crop applies when you release" Style="{StaticResource MutedLabel}"
+
+                               TextWrapping="Wrap" Margin="0,2,0,10" />
+
+                    <Button Content="Reset crop" Style="{StaticResource IconGhost}" Click="ResetCrop_Click"
+
+                            HorizontalAlignment="Stretch" Padding="10,6" FontSize="11" />
+
+                </StackPanel>
+
+            </ScrollViewer>
+
+        </Border>
+
+
+
         <Border x:Name="TrayPanel" DockPanel.Dock="Bottom" Background="#FF0C0C0E"
 
-                BorderBrush="{StaticResource BorderBrushMuted}" BorderThickness="0,1,0,0" Height="132">
+                BorderBrush="{StaticResource BorderBrushMuted}" BorderThickness="0,1,0,0" MinHeight="168">
 
-            <Grid>
+            <Grid Margin="0,0,0,4">
 
                 <Grid.RowDefinitions>
 
                     <RowDefinition Height="Auto" />
 
-                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" MinHeight="118" />
 
                 </Grid.RowDefinitions>
 
-                <DockPanel Grid.Row="0" Margin="12,8,12,4">
+                <DockPanel Grid.Row="0" Margin="12,10,12,6">
 
                     <TextBlock Text="Library" Foreground="{StaticResource MutedTextBrush}" FontSize="11"
 
@@ -103,113 +145,114 @@
                 </DockPanel>
 
                 <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto"
-                              VerticalScrollBarVisibility="Disabled" Margin="8,0,8,8">
 
-                <ListBox x:Name="LibraryList"
+                              VerticalScrollBarVisibility="Disabled" Margin="8,0,8,10">
 
-                         Background="Transparent" BorderThickness="0"
+                    <ListBox x:Name="LibraryList" Background="Transparent" BorderThickness="0"
 
-                         SelectionChanged="LibraryList_SelectionChanged"
+                             SelectionChanged="LibraryList_SelectionChanged"
 
-                         PreviewMouseLeftButtonDown="LibraryList_PreviewMouseLeftButtonDown"
+                             PreviewMouseLeftButtonDown="LibraryList_PreviewMouseLeftButtonDown"
 
-                         PreviewMouseMove="LibraryList_PreviewMouseMove">
+                             PreviewMouseMove="LibraryList_PreviewMouseMove">
 
-                    <ListBox.ItemsPanel>
+                        <ListBox.ItemsPanel>
 
-                        <ItemsPanelTemplate>
+                            <ItemsPanelTemplate>
 
-                            <StackPanel Orientation="Horizontal" />
+                                <StackPanel Orientation="Horizontal" />
 
-                        </ItemsPanelTemplate>
+                            </ItemsPanelTemplate>
 
-                    </ListBox.ItemsPanel>
+                        </ListBox.ItemsPanel>
 
-                    <ListBox.ItemContainerStyle>
+                        <ListBox.ItemContainerStyle>
 
-                        <Style TargetType="ListBoxItem">
+                            <Style TargetType="ListBoxItem">
 
-                            <Setter Property="Margin" Value="4,0" />
+                                <Setter Property="Margin" Value="4,0" />
 
-                            <Setter Property="Padding" Value="0" />
+                                <Setter Property="Padding" Value="0" />
 
-                            <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="Background" Value="Transparent" />
 
-                            <Setter Property="BorderThickness" Value="2" />
+                                <Setter Property="BorderThickness" Value="2" />
 
-                            <Setter Property="BorderBrush" Value="Transparent" />
+                                <Setter Property="BorderBrush" Value="Transparent" />
 
-                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
 
-                            <Setter Property="Template">
+                                <Setter Property="VerticalContentAlignment" Value="Top" />
 
-                                <Setter.Value>
+                                <Setter Property="Template">
 
-                                    <ControlTemplate TargetType="ListBoxItem">
+                                    <Setter.Value>
 
-                                        <Border Background="{TemplateBinding Background}"
+                                        <ControlTemplate TargetType="ListBoxItem">
 
-                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                            <Border Background="{TemplateBinding Background}"
 
-                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
 
-                                                CornerRadius="6" Padding="2">
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
 
-                                            <ContentPresenter />
+                                                    CornerRadius="6" Padding="2">
 
-                                        </Border>
+                                                <ContentPresenter />
 
-                                    </ControlTemplate>
+                                            </Border>
 
-                                </Setter.Value>
+                                        </ControlTemplate>
 
-                            </Setter>
+                                    </Setter.Value>
 
-                            <Style.Triggers>
+                                </Setter>
 
-                                <Trigger Property="IsSelected" Value="True">
+                                <Style.Triggers>
 
-                                    <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                    <Trigger Property="IsSelected" Value="True">
 
-                                </Trigger>
+                                        <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
 
-                                <Trigger Property="IsMouseOver" Value="True">
+                                    </Trigger>
 
-                                    <Setter Property="Background" Value="#12FFFFFF" />
+                                    <Trigger Property="IsMouseOver" Value="True">
 
-                                </Trigger>
+                                        <Setter Property="Background" Value="#12FFFFFF" />
 
-                            </Style.Triggers>
+                                    </Trigger>
 
-                        </Style>
+                                </Style.Triggers>
 
-                    </ListBox.ItemContainerStyle>
+                            </Style>
 
-                    <ListBox.ItemTemplate>
+                        </ListBox.ItemContainerStyle>
 
-                        <DataTemplate>
+                        <ListBox.ItemTemplate>
 
-                            <StackPanel Width="100" Tag="{Binding}" MouseRightButtonUp="TrayItem_MouseRightButtonUp">
+                            <DataTemplate>
 
-                                <Border Background="#FF1A1A1D" CornerRadius="4" Height="72" ClipToBounds="True">
+                                <StackPanel Width="104" Tag="{Binding}" MouseRightButtonUp="TrayItem_MouseRightButtonUp">
 
-                                    <Image Source="{Binding Thumbnail}" Stretch="Uniform" />
+                                    <Border Background="#FF1A1A1D" CornerRadius="4" Height="80" ClipToBounds="True">
 
-                                </Border>
+                                        <Image Source="{Binding Thumbnail}" Stretch="Uniform" />
 
-                                <TextBlock Text="{Binding TimeLabel}" FontSize="10"
+                                    </Border>
 
-                                           Foreground="{StaticResource MutedTextBrush}"
+                                    <TextBlock Text="{Binding TimeLabel}" FontSize="10"
 
-                                           TextTrimming="CharacterEllipsis" Margin="2,4,2,0" />
+                                               Foreground="{StaticResource MutedTextBrush}"
 
-                            </StackPanel>
+                                               TextTrimming="CharacterEllipsis" Margin="2,6,2,2" />
 
-                        </DataTemplate>
+                                </StackPanel>
 
-                    </ListBox.ItemTemplate>
+                            </DataTemplate>
 
-                </ListBox>
+                        </ListBox.ItemTemplate>
+
+                    </ListBox>
 
                 </ScrollViewer>
 
@@ -239,17 +282,86 @@
 
                     <InkCanvas x:Name="InkSurface" Background="Transparent" EditingMode="Ink" />
 
-                    <Canvas x:Name="CropOverlay" Visibility="Collapsed" Background="#22000000">
+                    <Canvas x:Name="CropVisualLayer" IsHitTestVisible="False">
 
-                        <Rectangle x:Name="CropRect"
+                        <Rectangle x:Name="CropDimTop" Fill="#66000000" />
 
-                                   Stroke="#FF4C8DFF"
+                        <Rectangle x:Name="CropDimLeft" Fill="#66000000" />
 
-                                   StrokeThickness="2"
+                        <Rectangle x:Name="CropDimRight" Fill="#66000000" />
 
-                                   StrokeDashArray="4 2"
+                        <Rectangle x:Name="CropDimBottom" Fill="#66000000" />
 
-                                   Fill="#334C8DFF" />
+                        <Rectangle x:Name="CropFrame" Stroke="#FF4C8DFF" StrokeThickness="2" Fill="Transparent" />
+
+                    </Canvas>
+
+                    <Canvas x:Name="CropHandleLayer"
+                            MouseMove="CropHandle_MouseMove" MouseLeftButtonUp="CropHandle_MouseUp">
+
+                        <Border x:Name="HandleTopLeft" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeNWSE" Tag="TopLeft" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
+
+                        <Border x:Name="HandleTop" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeNS" Tag="Top" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
+
+                        <Border x:Name="HandleTopRight" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeNESW" Tag="TopRight" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
+
+                        <Border x:Name="HandleRight" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeWE" Tag="Right" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
+
+                        <Border x:Name="HandleBottomRight" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeNWSE" Tag="BottomRight" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
+
+                        <Border x:Name="HandleBottom" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeNS" Tag="Bottom" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
+
+                        <Border x:Name="HandleBottomLeft" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeNESW" Tag="BottomLeft" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
+
+                        <Border x:Name="HandleLeft" Width="12" Height="12" Background="White"
+
+                                BorderBrush="{StaticResource AccentBrush}" BorderThickness="2" CornerRadius="2"
+
+                                Cursor="SizeWE" Tag="Left" MouseLeftButtonDown="CropHandle_MouseDown"
+
+                                MouseLeftButtonUp="CropHandle_MouseUp" />
 
                     </Canvas>
 

@@ -1,0 +1,74 @@
+name: Release
+
+# Push a version tag to publish a release:
+#   git tag v0.2.0 && git push origin v0.2.0
+# Run it manually (Actions tab) to build the artifacts without publishing a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $version = "0.0.0-dev.${{ github.run_number }}"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Version: $version"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and
+              -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Test
+        run: dotnet test OverInk.slnx -c Release
+
+      - name: Build artifacts
+        shell: pwsh
+        run: ./scripts/publish.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OverInk-${{ steps.version.outputs.version }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.exe
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ghArgs = @("release", "create", "${{ github.ref_name }}",
+            "--title", "OverInk ${{ steps.version.outputs.version }}",
+            "--generate-notes")
+          if ("${{ steps.version.outputs.version }}" -match "-") { $ghArgs += "--prerelease" }
+          $ghArgs += (Get-ChildItem artifacts -File |
+            Where-Object { $_.Extension -in ".zip", ".exe", ".txt" } |
+            ForEach-Object { $_.FullName })
+          gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

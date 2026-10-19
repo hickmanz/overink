@@ -38,6 +38,9 @@ public sealed class RemoteEraseEventArgs : EventArgs
     public required string AuthorId { get; init; }
     public required Point[] PointsDips { get; init; }
     public required double EraserSize { get; init; }
+
+    /// <summary>Erase whole strokes under the eraser instead of just the touched part.</summary>
+    public bool Whole { get; init; }
 }
 
 public sealed class RemoteStrokeIdEventArgs : EventArgs

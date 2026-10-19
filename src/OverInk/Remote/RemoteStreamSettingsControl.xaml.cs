@@ -34,7 +34,9 @@ public partial class RemoteStreamSettingsControl : UserControl
 
         _loading = true;
         var s = _settings.Current;
-        MaxEdgeSlider.Value = Math.Clamp(s.RemoteMaxEdge, (int)MaxEdgeSlider.Minimum, (int)MaxEdgeSlider.Maximum);
+        var est = RemoteStreamEstimator.Estimate(s);
+        var edgeForSlider = s.RemoteMaxEdge <= 0 ? est.MonitorLongEdge : s.RemoteMaxEdge;
+        MaxEdgeSlider.Value = Math.Clamp(edgeForSlider, (int)MaxEdgeSlider.Minimum, (int)MaxEdgeSlider.Maximum);
         FpsSlider.Value = Math.Clamp(s.RemoteMaxFps, (int)FpsSlider.Minimum, (int)FpsSlider.Maximum);
         QualitySlider.Value = Math.Clamp(s.RemoteJpegQuality, (int)QualitySlider.Minimum, (int)QualitySlider.Maximum);
         _loading = false;
@@ -69,9 +71,9 @@ public partial class RemoteStreamSettingsControl : UserControl
             $"Stream {est.StreamWidth}×{est.StreamHeight} · {_settings.Current.RemoteMaxFps} fps · " +
             $"JPEG {_settings.Current.RemoteJpegQuality}";
         GuidanceText.Text = est.Guidance;
-        MaxEdgeLabel.Text = $"Max long edge {(int)MaxEdgeSlider.Value} px (monitor {est.MonitorLongEdge} px)";
-        FpsLabel.Text = $"Frame rate {(int)FpsSlider.Value} fps";
-        QualityLabel.Text = $"JPEG quality {(int)QualitySlider.Value}";
+        MaxEdgeValue.Text = $"{(int)MaxEdgeSlider.Value} px  ·  monitor {est.MonitorLongEdge} px";
+        FpsValue.Text = $"{(int)FpsSlider.Value} fps";
+        QualityValue.Text = $"{(int)QualitySlider.Value}";
         BandwidthText.Text = $"≈ {est.EstimatedKbps:0} Kbps LAN (~{est.EstimatedKbps / 8:0} KB/s)";
     }
 

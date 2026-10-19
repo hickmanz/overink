@@ -20,6 +20,24 @@ public sealed record RemoteStreamEstimate(
 
 public static class RemoteStreamEstimator
 {
+    public static int GetPrimaryMonitorLongEdgePx()
+    {
+        var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
+        return Math.Max(
+            Math.Max(1, (int)geometry.Pixels.Width),
+            Math.Max(1, (int)geometry.Pixels.Height));
+    }
+
+    public static int GetEffectiveMaxEdge(AppSettings settings)
+    {
+        if (settings.RemoteMaxEdge <= 0)
+        {
+            return GetPrimaryMonitorLongEdgePx();
+        }
+
+        return Math.Clamp(settings.RemoteMaxEdge, 320, 7680);
+    }
+
     public static RemoteStreamEstimate Estimate(AppSettings settings)
     {
         var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
@@ -28,7 +46,7 @@ public static class RemoteStreamEstimator
         var dw = Math.Max(1, (int)geometry.Dips.Width);
         var dh = Math.Max(1, (int)geometry.Dips.Height);
         var longEdge = Math.Max(pw, ph);
-        var maxEdge = Math.Max(320, settings.RemoteMaxEdge);
+        var maxEdge = GetEffectiveMaxEdge(settings);
         var scale = Math.Min(1.0, maxEdge / (double)longEdge);
         var streamW = Math.Max(1, (int)(pw * scale));
         var streamH = Math.Max(1, (int)(ph * scale));
@@ -56,7 +74,7 @@ public static class RemoteStreamEstimator
         (Math.Min(2560, monitorLongEdge), 12, 82);
 
     public static (int MaxEdge, int Fps, int Quality) PresetNative(int monitorLongEdge) =>
-        (Math.Min(7680, monitorLongEdge), 10, 85);
+        (Math.Min(7680, monitorLongEdge), 10, 95);
 
     public static (int MaxEdge, int Fps, int Quality) PresetEco() => (1280, 6, 65);
 

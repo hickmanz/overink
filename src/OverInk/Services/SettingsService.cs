@@ -30,6 +30,20 @@ public sealed class SettingsService
         Directory.CreateDirectory(folder);
         _path = Path.Combine(folder, "settings.json");
         Current = Load();
+        MigrateLegacyRemoteStreamDefaults();
+    }
+
+    /// <summary>Previous factory defaults were 2560px / quality 78.</summary>
+    private void MigrateLegacyRemoteStreamDefaults()
+    {
+        if (Current.RemoteMaxEdge != 2560 || Current.RemoteJpegQuality != 78)
+        {
+            return;
+        }
+
+        Current.RemoteMaxEdge = 0;
+        Current.RemoteJpegQuality = 95;
+        Save();
     }
 
     public void Save()
@@ -40,7 +54,7 @@ public sealed class SettingsService
 
     public void ApplyRemoteStreamSettings(int maxEdge, int maxFps, int jpegQuality, bool persist = true)
     {
-        Current.RemoteMaxEdge = Math.Clamp(maxEdge, 320, 7680);
+        Current.RemoteMaxEdge = maxEdge <= 0 ? 0 : Math.Clamp(maxEdge, 320, 7680);
         Current.RemoteMaxFps = Math.Clamp(maxFps, 1, 30);
         Current.RemoteJpegQuality = Math.Clamp(jpegQuality, 35, 95);
         if (persist)
