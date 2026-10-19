@@ -11,6 +11,9 @@ public sealed class CaptureItem
 
     public string DisplayName => Path.GetFileNameWithoutExtension(FlattenedPath);
 
+    /// <summary>Stable identifier within a library folder (the file name without extension).</summary>
+    public string Id => DisplayName;
+
     public bool HasEditableSidecars => SidecarBaseName is not null;
 
     public BitmapImage CreateThumbnail(int decodeHeight = 120)

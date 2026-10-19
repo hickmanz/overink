@@ -87,14 +87,15 @@ public sealed class PairingService
         }
     }
 
-    public string IssueDeviceKey(string deviceName)
+    public string IssueDeviceKey(string deviceName, bool canUseLibrary = true)
     {
         var key = CreateToken();
         var device = new PairedDevice
         {
             Name = string.IsNullOrWhiteSpace(deviceName) ? "iPad" : deviceName.Trim(),
             KeyHash = HashKey(key),
-            LastSeenUtc = DateTime.UtcNow
+            LastSeenUtc = DateTime.UtcNow,
+            CanUseLibrary = canUseLibrary
         };
         _settings.Current.PairedDevices.Add(device);
         _settings.Save();

@@ -364,6 +364,10 @@
 
     <StreamGeometry x:Key="IconCamera">M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z M15 13a3 3 0 1 1-6 0a3 3 0 1 1 6 0</StreamGeometry>
     <StreamGeometry x:Key="IconChevronDown">M6 9l6 6 6-6</StreamGeometry>
+    <!-- contrast: circle r=10 plus the filled half -->
+    <StreamGeometry x:Key="IconContrast">M22 12a10 10 0 1 1-20 0a10 10 0 1 1 20 0 M12 18a6 6 0 0 0 0-12v12z</StreamGeometry>
+    <!-- images: capture library / editor -->
+    <StreamGeometry x:Key="IconImages">M22 11l-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16 M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2 M14 7a1 1 0 1 1-2 0a1 1 0 1 1 2 0 M10 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z</StreamGeometry>
     <StreamGeometry x:Key="IconScan">M3 7V5a2 2 0 0 1 2-2h2 M17 3h2a2 2 0 0 1 2 2v2 M21 17v2a2 2 0 0 1-2 2h-2 M7 21H5a2 2 0 0 1-2-2v-2</StreamGeometry>
     <!-- grip-vertical: six r=1 circles (dots come from the round stroke caps) -->
     <StreamGeometry x:Key="IconGrip">M10 12a1 1 0 1 1-2 0a1 1 0 1 1 2 0 M10 5a1 1 0 1 1-2 0a1 1 0 1 1 2 0 M10 19a1 1 0 1 1-2 0a1 1 0 1 1 2 0 M16 12a1 1 0 1 1-2 0a1 1 0 1 1 2 0 M16 5a1 1 0 1 1-2 0a1 1 0 1 1 2 0 M16 19a1 1 0 1 1-2 0a1 1 0 1 1 2 0</StreamGeometry>

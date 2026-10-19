@@ -59,6 +59,31 @@ public static class ScreenCaptureService
         }
     }
 
+    /// <summary>
+    /// True when the capture is entirely black, which is what the desktop yields while the session is locked,
+    /// the display is off, or a secure desktop (UAC) is showing.
+    /// </summary>
+    public static bool IsBlank(BitmapSource bitmap)
+    {
+        var scale = Math.Min(1.0, 64.0 / Math.Max(bitmap.PixelWidth, bitmap.PixelHeight));
+        BitmapSource sample = scale < 1.0
+            ? new TransformedBitmap(bitmap, new System.Windows.Media.ScaleTransform(scale, scale))
+            : bitmap;
+        var converted = new FormatConvertedBitmap(sample, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+        var stride = converted.PixelWidth * 4;
+        var pixels = new byte[stride * converted.PixelHeight];
+        converted.CopyPixels(pixels, stride, 0);
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            if (pixels[i] != 0 || pixels[i + 1] != 0 || pixels[i + 2] != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     [System.Runtime.InteropServices.DllImport("gdi32.dll")]
     private static extern bool DeleteObject(IntPtr hObject);
 }

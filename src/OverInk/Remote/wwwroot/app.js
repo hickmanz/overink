@@ -1,4 +1,5 @@
-import { icon } from './icons.js?v=2';
+import { icon } from './icons.js?v=4';
+import { createLibraryApi, renderLibraryGrid, LibraryError } from './library.js?v=2';
 
 const params = new URLSearchParams(location.search);
 const allowMouse = params.get('mouse') === '1'
@@ -50,13 +51,61 @@ const sizeSlider = document.getElementById('sizeSlider');
 const pressureToggle = document.getElementById('pressureToggle');
 const sizeValue = document.getElementById('sizeValue');
 const sizePreview = document.getElementById('sizePreview');
+const veilBtn = document.getElementById('veilBtn');
+const veilPopover = document.getElementById('veilPopover');
+const veilSlider = document.getElementById('veilSlider');
+const veilValue = document.getElementById('veilValue');
 const undoBtn = document.getElementById('undoBtn');
 const redoBtn = document.getElementById('redoBtn');
 const clearBtn = document.getElementById('clearBtn');
 
 let debugLog = localStorage.getItem('overink.debugLog') === '1';
-/** Which popover is open: 'color' | 'size' | 'settings' | null. */
+/** Which popover is open: 'color' | 'size' | 'veil' | 'settings' | null. */
 let openPopover = null;
+
+/*
+ * Library (document) mode. Editing a saved capture reuses the live drawing machinery: the capture image takes
+ * the place of the streamed frame, `screenW/H` become the capture's logical size, and `vectorInk` holds the ink.
+ * Strokes never go over the socket in this mode: `send()` hands them to docHandle() instead, and the ink is
+ * saved back to the PC over HTTP.
+ */
+let libToken = '';
+let docMode = false;
+/** The PC screen's logical size from `welcome`/`state`; `screenW/H` hold the capture's size while in doc mode. */
+let liveScreenW = 1920;
+let liveScreenH = 1080;
+const libraryApi = createLibraryApi(() => libToken);
+const doc = {
+  id: null,
+  name: '',
+  rev: null,
+  /** Capture size in image pixels, and logical-units-to-pixels factor (a 4K capture is 2x). */
+  w: 0,
+  h: 0,
+  scale: 1,
+  dirty: false,
+  saving: false,
+  /** Increments on every edit so a save can tell whether newer edits arrived while it was in flight. */
+  editSeq: 0,
+  /** Set when the PC copy changed (or a save was rejected) while we hold unsaved edits: { rev }. */
+  conflict: null,
+  /** Rev reported by the PC while our own save was in flight; compared to the save result afterwards. */
+  remoteRevDuringSave: null,
+  saveTimer: null,
+  loadSeq: 0,
+  undo: [],
+  redo: [],
+  /** Pre-edit snapshot for the eraser gesture in progress (one undo step per gesture). */
+  eraseSnap: null,
+  /** Pre-edit snapshot for the pen stroke in progress. */
+  strokeSnap: null
+};
+/** What live mode needs back after leaving a document. */
+let liveSaved = null;
+let libraryOpen = false;
+let captureBusyTimer = null;
+const DOC_SAVE_DELAY_MS = 1500;
+const DOC_UNDO_LIMIT = 100;
 
 const ctxOpts = { desynchronized: true };
 const fctx = frameCanvas.getContext('2d', ctxOpts) || frameCanvas.getContext('2d');
@@ -76,6 +125,12 @@ let followHost = false;
 let pressureSensitive = true;
 
 const view = { scale: 1, tx: 0, ty: 0, rotation: 0 };
+// Zoom/rotate preview state (see viewChanged). Declared early: redraw() runs during start-up.
+const VIEW_SETTLE_MS = 160;
+const renderedView = { scale: 1, tx: 0, ty: 0, rotation: 0 };
+let viewPreviewActive = false;
+let viewPreviewRaf = 0;
+let viewSettleTimer = 0;
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 8;
 const rootEl = document.getElementById('root');
@@ -84,7 +139,13 @@ const pendingLocal = new Map();
 const peerStrokes = new Map();
 const activeLocal = new Map();
 /** Committed pen strokes — always drawn as vectors over the JPEG for crisp ink. */
-const vectorInk = new Map();
+const vectorInk = new (class extends Map {
+  /** Bumped on every change, so the capture editor can cache the rendered ink until it changes. */
+  version = 0;
+  set(k, v) { this.version++; return super.set(k, v); }
+  delete(k) { this.version++; return super.delete(k); }
+  clear() { this.version++; super.clear(); }
+})();
 /**
  * Shapes committed from this device, drawn locally for instant feedback until a streamed frame that
  * already contains them arrives (or a timeout). Never kept long-term, so clear/undo/erase on the PC
@@ -186,6 +247,7 @@ if (!DOCK_EDGES.includes(dockEdge)) dockEdge = 'bottom';
 const POPOVERS = {
   color: { panel: colorPopover, button: colorBtn },
   size: { panel: sizePopover, button: sizeBtn },
+  veil: { panel: veilPopover, button: veilBtn },
   settings: { panel: settingsPanel, button: settingsBtn }
 };
 
@@ -259,9 +321,21 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
+/** Messages that still go to the PC while editing a library capture; everything else stays local. */
+const DOC_PASSTHROUGH = new Set(['hello', 'ping', 'viewMode', 'capture']);
+
 function send(obj) {
+  if (docMode && !DOC_PASSTHROUGH.has(obj.t)) {
+    docHandle(obj);
+    return;
+  }
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify(obj));
+}
+
+/** Drawing is allowed while connected, and also while editing a library capture offline (it saves on reconnect). */
+function canInteract() {
+  return sessionReady || docMode;
 }
 
 function connect() {
@@ -330,25 +404,48 @@ function connect() {
   };
 }
 
+/** Live-screen messages that must not touch the document being edited. */
+const LIVE_ONLY_MESSAGES = new Set([
+  'ack', 'strokesRemoved', 'strokesAdded', 'cleared',
+  'peerStrokeBegin', 'peerStrokePoints', 'peerStrokeEnd', 'peerStrokeCancel', 'peerShapePreview', 'peerShapeCommit'
+]);
+
 function handleJson(msg) {
+  if (docMode && LIVE_ONLY_MESSAGES.has(msg.t)) return;
   switch (msg.t) {
     case 'welcome':
       sessionReady = true;
-      log(`welcome clientId=${msg.clientId} screen=${msg.screenW}x${msg.screenH}`);
+      log(`welcome clientId=${msg.clientId} screen=${msg.screenW}x${msg.screenH} lib=${msg.libToken ? 'yes' : 'no'}`);
       clientId = msg.clientId;
-      screenW = msg.screenW; screenH = msg.screenH;
+      liveScreenW = msg.screenW; liveScreenH = msg.screenH;
+      if (!docMode) { screenW = liveScreenW; screenH = liveScreenH; }
       inkRevision = msg.inkRevision || 0;
-      clearVectorInkLayers();
+      if (!docMode) clearVectorInkLayers();
       if (msg.deviceKey) {
         localStorage.setItem('overink.deviceKey', msg.deviceKey);
       }
+      libToken = msg.libToken || '';
+      hudEl.dataset.lib = libToken ? '1' : '0';
       if (msg.state) applyState(msg.state);
-      setStatus(`Connected · ${Math.round(screenW)}×${Math.round(screenH)}`, 'ok');
+      setStatus(`Connected · ${Math.round(liveScreenW)}×${Math.round(liveScreenH)}`, 'ok');
       try {
         inputEl.focus({ preventScroll: true });
       } catch {
         inputEl.focus();
       }
+      onLibraryReconnected();
+      break;
+    case 'captured':
+      onCaptured(msg.id);
+      break;
+    case 'captureFailed':
+      onCaptureFailed(msg.message);
+      break;
+    case 'libraryChanged':
+      onLibraryChanged();
+      break;
+    case 'libraryItemChanged':
+      onLibraryItemChanged(msg.id, msg.rev);
       break;
     case 'state':
       applyState(msg);
@@ -389,7 +486,7 @@ function handleJson(msg) {
     case 'pong':
       if (sessionReady) {
         const ms = Math.max(0, Date.now() - (msg.ms || 0));
-        setStatus(`${Math.round(screenW)}×${Math.round(screenH)} · ${ms} ms`, ms > 250 ? 'warn' : 'ok');
+        setStatus(`${Math.round(liveScreenW)}×${Math.round(liveScreenH)} · ${ms} ms`, ms > 250 ? 'warn' : 'ok');
       }
       break;
     case 'error':
@@ -437,15 +534,24 @@ function applyState(state) {
   tool = state.tool || tool;
   if (state.color) color = normalizeColorHex(state.color);
   if (state.size && !sizeDragging) size = state.size;
+  // The PC owns the veil (it renders it into the stream); mirror its value unless we're mid-drag.
+  if (typeof state.screenVeil === 'number' && !veilDragging) screenVeil = state.screenVeil;
   if (typeof state.pressureSensitive === 'boolean') pressureSensitive = state.pressureSensitive;
   if (state.screenW > 0 && state.screenH > 0) {
-    screenW = state.screenW;
-    screenH = state.screenH;
+    liveScreenW = state.screenW;
+    liveScreenH = state.screenH;
+    // While editing a capture, screenW/H describe that capture and must not follow the PC screen.
+    if (!docMode) {
+      screenW = liveScreenW;
+      screenH = liveScreenH;
+    }
   }
   updateUi();
 }
 
 function onFrameBuffer(buffer) {
+  // A frame already in flight when we switched to a capture must not replace the capture image.
+  if (docMode) return;
   frameLogCount += 1;
   if (frameLogCount <= 3 || frameLogCount % 30 === 0) {
     log(`frame #${frameLogCount} ${buffer.byteLength} bytes`);
@@ -478,6 +584,7 @@ function handleFrame(buffer) {
     return;
   }
   decodeJpeg(jpeg).then(bmp => {
+    if (docMode) return; // decoded after we switched to a capture
     frameBitmap = bmp;
     pruneLocalShapes(rev);
     redraw();
@@ -571,7 +678,8 @@ function finalizeLocal(id, rev) {
 }
 
 function canvasClientOffset() {
-  const rect = frameCanvas.getBoundingClientRect();
+  // Measure the untransformed container: while a zoom/rotate preview is showing, the canvases carry a CSS transform.
+  const rect = rootEl.getBoundingClientRect();
   return { left: rect.left, top: rect.top };
 }
 
@@ -609,7 +717,110 @@ function canvasFromNorm(nx, ny) {
   ];
 }
 
+/**
+ * Cheap repaint for pen movement: only the ink layers. The frame/capture image doesn't change while drawing, and
+ * repainting it (plus clearing three full-resolution canvases) on every pen sample is what made drawing chug on an
+ * iPad. Requests are merged to one per animation frame, however many samples the Pencil delivered.
+ */
+let inkRedrawQueued = false;
+function scheduleInkRedraw() {
+  if (inkRedrawQueued) return;
+  inkRedrawQueued = true;
+  requestAnimationFrame(() => {
+    inkRedrawQueued = false;
+    redrawInk();
+  });
+}
+
+/*
+ * Zoom / rotate / pan preview. Repainting the screenshot and all ink for every touch event is far too slow on an
+ * iPad (huge canvases), so while the fingers move the existing canvases are just transformed by the CSS
+ * compositor (cheap, on the GPU) from the view they were last painted with to the current view. Once the
+ * gesture pauses or ends, one crisp repaint replaces the preview.
+ */
+function viewChanged() {
+  clearTimeout(viewSettleTimer);
+  viewSettleTimer = setTimeout(settleView, VIEW_SETTLE_MS);
+  if (viewPreviewRaf) return;
+  viewPreviewRaf = requestAnimationFrame(() => {
+    viewPreviewRaf = 0;
+    applyViewPreview();
+  });
+}
+
+/** Repaint crisply now (end of a gesture). */
+function settleView() {
+  viewSettleTimer = 0;
+  if (viewPreviewActive || viewPreviewRaf) redraw();
+}
+
+function viewLinear(v) {
+  const c = Math.cos(v.rotation) * v.scale;
+  const s = Math.sin(v.rotation) * v.scale;
+  return { a: c, b: s, c: -s, d: c, e: v.tx, f: v.ty };
+}
+
+function applyViewPreview() {
+  const m0 = viewLinear(renderedView);
+  const m1 = viewLinear(view);
+  const det = m0.a * m0.d - m0.b * m0.c;
+  if (!det) return;
+  // inverse of the painted view
+  const ia = m0.d / det, ib = -m0.b / det, ic = -m0.c / det, id = m0.a / det;
+  const ie = -(ia * m0.e + ic * m0.f), iff = -(ib * m0.e + id * m0.f);
+  // current * inverse(painted)
+  const a = m1.a * ia + m1.c * ib, b = m1.b * ia + m1.d * ib;
+  const c = m1.a * ic + m1.c * id, d = m1.b * ic + m1.d * id;
+  const e = m1.a * ie + m1.c * iff + m1.e, f = m1.b * ie + m1.d * iff + m1.f;
+  const css = `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`;
+  for (const canvas of [frameCanvas, peerCanvas, localCanvas]) canvas.style.transform = css;
+  viewPreviewActive = true;
+}
+
+function clearViewPreview() {
+  clearTimeout(viewSettleTimer);
+  viewSettleTimer = 0;
+  if (viewPreviewRaf) {
+    cancelAnimationFrame(viewPreviewRaf);
+    viewPreviewRaf = 0;
+  }
+  if (viewPreviewActive) {
+    for (const canvas of [frameCanvas, peerCanvas, localCanvas]) canvas.style.transform = '';
+    viewPreviewActive = false;
+  }
+}
+
+function redrawInk() {
+  // A pen/ink update while the preview is showing needs the real repaint (the canvases are still transformed).
+  if (viewPreviewActive) {
+    redraw();
+    return;
+  }
+  const dpr = devicePixelRatio || 1;
+  updateContentRect();
+  lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  lctx.clearRect(0, 0, innerWidth, innerHeight);
+  if (docMode) {
+    syncCommittedLayer();
+  } else if (peerStrokes.size || peerShapes.size) {
+    pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    pctx.clearRect(0, 0, innerWidth, innerHeight);
+    drawStrokeMap(pctx, peerStrokes);
+    for (const shape of peerShapes.values()) drawShape(pctx, shape);
+  }
+  for (const shape of localShapes.values()) drawShape(lctx, shape);
+  if (!docMode) drawStrokeMap(lctx, vectorInk);
+  drawStrokeMap(lctx, activeLocal);
+  if (shapeDrag) drawShape(lctx, { ...shapeDrag, tool, color, size });
+  drawEraserCursor(lctx);
+}
+
 function redraw() {
+  clearViewPreview();
+  renderedView.scale = view.scale;
+  renderedView.tx = view.tx;
+  renderedView.ty = view.ty;
+  renderedView.rotation = view.rotation;
   const dpr = devicePixelRatio || 1;
   fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -632,12 +843,55 @@ function redraw() {
   drawStrokeMap(pctx, peerStrokes);
   for (const shape of peerShapes.values()) drawShape(pctx, shape);
   for (const shape of localShapes.values()) drawShape(lctx, shape);
-  drawStrokeMap(lctx, vectorInk);
+  if (docMode) paintCommittedLayer();
+  else drawStrokeMap(lctx, vectorInk);
   drawStrokeMap(lctx, activeLocal);
   if (shapeDrag) drawShape(lctx, { ...shapeDrag, tool, color, size });
   drawEraserCursor(lctx);
 }
 
+/*
+ * Editing a capture can mean hundreds of handwriting strokes. While one is open there are no other participants, so
+ * the finished ink lives on the (otherwise unused) peer canvas and is painted once; a new stroke is just drawn on
+ * top of it when it is committed. Each pen frame then only clears and repaints the stroke being drawn.
+ * It is rebuilt in full only when the ink changes some other way (erase, undo, clear) or the view changes.
+ */
+const committedLayer = { key: '', version: -1 };
+
+function committedInkKey() {
+  updateContentRect();
+  const cr = contentRect;
+  return [
+    innerWidth, innerHeight, devicePixelRatio || 1, view.scale, view.tx, view.ty, view.rotation,
+    screenW, screenH, pressureSensitive, cr.x, cr.y, cr.w, cr.h
+  ].join('|');
+}
+
+function paintCommittedLayer() {
+  const dpr = devicePixelRatio || 1;
+  pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  pctx.clearRect(0, 0, innerWidth, innerHeight);
+  drawStrokeMap(pctx, vectorInk);
+  committedLayer.key = committedInkKey();
+  committedLayer.version = vectorInk.version;
+}
+
+function syncCommittedLayer() {
+  if (committedLayer.version === vectorInk.version && committedLayer.key === committedInkKey()) return;
+  paintCommittedLayer();
+}
+
+/** After exactly one stroke was added to vectorInk: draw just that stroke if the layer was up to date before it. */
+function appendCommittedStroke(id, versionBefore) {
+  if (!docMode || viewPreviewActive) return;
+  const stroke = vectorInk.get(id);
+  if (!stroke || vectorInk.version !== versionBefore + 1) return;
+  if (committedLayer.version !== versionBefore || committedLayer.key !== committedInkKey()) return;
+  const dpr = devicePixelRatio || 1;
+  pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawStroke(pctx, stroke);
+  committedLayer.version = vectorInk.version;
+}
 function drawStrokeMap(ctx, map) {
   for (const stroke of map.values()) {
     drawStroke(ctx, stroke);
@@ -1125,7 +1379,7 @@ function beginDrawAtClient(clientX, clientY, p, source) {
       eraseGesture = { whole: false, started: false, cx: clientX, cy: clientY, nx, ny, prevNx: nx, prevNy: ny };
     }
     eraserCursor = { nx, ny };
-    redraw();
+    redrawInk();
     return;
   }
   drawPointerErasing = false;
@@ -1148,7 +1402,7 @@ function continueDrawAtClient(clientX, clientY, p) {
     shapeDrag.y2 = ny;
     // Preview is drawn locally only. Sending shapePreview would make the PC draw it too, and the streamed
     // frame (low fps) would show a laggy ghost behind the local one. The PC only gets the shape on commit.
-    redraw();
+    scheduleInkRedraw();
     return;
   }
 
@@ -1176,7 +1430,7 @@ function continueDrawAtClient(clientX, clientY, p) {
     }
     eraserCursor = { nx, ny };
   }
-  redraw();
+  scheduleInkRedraw();
 }
 
 function continueDraw(e) {
@@ -1188,6 +1442,10 @@ function continueDraw(e) {
 
 /** Sends an erase (a segment from a to b, normalized) and mirrors it locally for instant feedback. */
 function eraseSegment(gesture, ax, ay, bx, by) {
+  if (docMode) {
+    docEraseSegment(ax, ay, bx, by, gesture.whole === true);
+    return;
+  }
   const pts = (ax === bx && ay === by) ? [ax, ay] : [ax, ay, bx, by];
   send({ t: 'erase', pts, size, whole: gesture.whole === true });
   eraseLocalAt(ax, ay, bx, by, gesture.whole === true);
@@ -1196,18 +1454,19 @@ function eraseSegment(gesture, ax, ay, bx, by) {
 function endDraw() {
   if (eraserCursor) {
     eraserCursor = null;
-    redraw();
+    redrawInk();
   }
   if (eraseGesture) {
     const g = eraseGesture;
     eraseGesture = null;
+    if (docMode) docFinishErase();
     if (!g.started && !g.whole) {
       // A tap. Wait briefly for a second tap (= erase whole stroke); otherwise it's a small partial erase.
       const tap = { t: Date.now(), cx: g.cx, cy: g.cy, nx: g.nx, ny: g.ny, timer: 0 };
       tap.timer = setTimeout(() => {
         if (lastEraseTap === tap) lastEraseTap = null;
         eraseSegment({ whole: false }, tap.nx, tap.ny, tap.nx, tap.ny);
-        redraw();
+        redrawInk();
       }, DOUBLE_TAP_MS);
       lastEraseTap = tap;
     }
@@ -1218,14 +1477,17 @@ function endDraw() {
       t: 'shapeCommit', id: s.id, tool,
       x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, color, size
     });
-    // Keep showing it locally until the PC's streamed frame contains it.
-    localShapes.set(s.id, {
-      tool, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, color, size,
-      ackRev: null, ackAt: 0, since: Date.now()
-    });
-    setTimeout(() => { pruneLocalShapes(inkRevision); redraw(); }, LOCAL_SHAPE_TIMEOUT_MS + 100);
+    // Keep showing it locally until the PC's streamed frame contains it. (A capture has no stream: the shape
+    // already became a stroke in docHandle.)
+    if (!docMode) {
+      localShapes.set(s.id, {
+        tool, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, color, size,
+        ackRev: null, ackAt: 0, since: Date.now()
+      });
+      setTimeout(() => { pruneLocalShapes(inkRevision); redraw(); }, LOCAL_SHAPE_TIMEOUT_MS + 100);
+    }
     shapeDrag = null;
-    redraw();
+    redrawInk();
     return;
   }
   const id = frameCanvas._activeStrokeId;
@@ -1233,7 +1495,9 @@ function endDraw() {
     flushStrokePoints(id);
     send({ t: 'strokeEnd', id });
     log(`draw end id=${id.slice(0, 8)}…`);
-    pendingLocal.set(id, { since: Date.now(), targetRev: 0, ackAt: 0, releaseTimer: null, fallbackTimer: null });
+    if (!docMode) {
+      pendingLocal.set(id, { since: Date.now(), targetRev: 0, ackAt: 0, releaseTimer: null, fallbackTimer: null });
+    }
     frameCanvas._activeStrokeId = null;
     setTimeout(() => {
       if (activeLocal.has(id)) {
@@ -1243,11 +1507,11 @@ function endDraw() {
       }
     }, 8000);
   }
-  redraw();
+  redrawInk();
 }
 
 function pointerDown(e) {
-  if (!sessionReady || isUiTarget(e.target)) return;
+  if (!canInteract() || isUiTarget(e.target)) return;
   if (!isDrawAreaTarget(e.target)) return;
   // First tap outside an open popover only dismisses it (no accidental stroke).
   if (openPopover) {
@@ -1269,7 +1533,7 @@ function pointerDown(e) {
 /** Safari often skips canvas; catch pen at document capture before Scribble/UI eats it. */
 function onPointerDownCapture(e) {
   if (e.pointerType !== 'pen') return;
-  if (!sessionReady) return;
+  if (!canInteract()) return;
   if (openPopover && !isUiTarget(e.target)) {
     closePopover();
     e.stopImmediatePropagation();
@@ -1278,7 +1542,10 @@ function onPointerDownCapture(e) {
   if (debugLog) log(`pen hit ${e.target.id || e.target.nodeName}`);
   if (isUiTarget(e.target)) return;
   if (!isDrawAreaTarget(e.target)) return;
-  if (drawPointerId !== null || stylusDrawTouchId !== null) return;
+  if (drawPointerId !== null || stylusDrawTouchId !== null) {
+    if (debugLog) log(`pen down ignored: previous stroke still active (pointer ${drawPointerId}, stylus touch ${stylusDrawTouchId})`);
+    return;
+  }
   pointerDown(e);
   e.stopImmediatePropagation();
 }
@@ -1319,7 +1586,7 @@ function zoomAt(clientX, clientY, scaleFactor) {
   const sy = view.scale * (Math.sin(view.rotation) * ix + Math.cos(view.rotation) * iy);
   view.tx = px - sx;
   view.ty = py - sy;
-  redraw();
+  viewChanged();
 }
 
 function rotateViewAboutScreenPoint(clientX, clientY, deltaAngle) {
@@ -1375,7 +1642,7 @@ function isStylusTouch(touch) {
 }
 
 function startStylusDraw(touch, e) {
-  if (!sessionReady) {
+  if (!canInteract()) {
     log('stylus blocked: not ready');
     return;
   }
@@ -1468,7 +1735,7 @@ function onTouchMove(e) {
     touchGesture.lastMidX = midX;
     touchGesture.lastMidY = midY;
     touchGesture.lastAngle = angle;
-    redraw();
+    viewChanged();
     return;
   }
   if (e.touches.length === 1 && touchGesture.kind === 'pan') {
@@ -1478,7 +1745,7 @@ function onTouchMove(e) {
     view.ty += t.clientY - touchGesture.lastY;
     touchGesture.lastX = t.clientX;
     touchGesture.lastY = t.clientY;
-    redraw();
+    viewChanged();
   }
 }
 
@@ -1498,6 +1765,7 @@ function onTouchEnd(e) {
   }
   if (e.touches.length === 0) {
     touchGesture = null;
+    settleView();
     return;
   }
   if (e.touches.length === 1 && stylusDrawTouchId === null) {
@@ -1524,6 +1792,10 @@ const TOOL_DEFS = [
 const toolButtons = new Map();
 const swatchButtons = new Map();
 let sizeDragging = false;
+/** White veil the PC lays over the screen under the ink, 0 – 0.6 (0 = off). */
+let screenVeil = 0;
+let veilDragging = false;
+let veilSendTimer = null;
 let sizeSendTimer = null;
 let clearConfirmTimer = null;
 
@@ -1553,6 +1825,14 @@ function sendSizeThrottled() {
     sizeSendTimer = null;
     if (!followHost) send({ t: 'setSize', size });
   }, 60);
+}
+
+function sendVeilThrottled() {
+  if (veilSendTimer) return;
+  veilSendTimer = setTimeout(() => {
+    veilSendTimer = null;
+    send({ t: 'setVeil', value: screenVeil });
+  }, 80);
 }
 
 function resetClearConfirm() {
@@ -1690,6 +1970,23 @@ function buildDock() {
 
   colorBtn.onclick = () => setPopover('color');
   sizeBtn.onclick = () => setPopover('size');
+  veilBtn.innerHTML = icon('contrast', 22);
+  document.getElementById('veilIcon').innerHTML = icon('contrast', 22);
+  veilBtn.onclick = () => setPopover('veil');
+  veilSlider.addEventListener('pointerdown', () => { veilDragging = true; });
+  const endVeilDrag = () => {
+    veilDragging = false;
+    clearTimeout(veilSendTimer);
+    veilSendTimer = null;
+    send({ t: 'setVeil', value: screenVeil });
+  };
+  veilSlider.addEventListener('pointerup', endVeilDrag);
+  veilSlider.addEventListener('pointercancel', endVeilDrag);
+  veilSlider.addEventListener('input', () => {
+    screenVeil = Number(veilSlider.value) / 100;
+    updateUi();
+    sendVeilThrottled();
+  });
 
   pressureToggle.addEventListener('change', () => {
     pressureSensitive = pressureToggle.checked;
@@ -1739,6 +2036,11 @@ function updateUi() {
   sizeDot.setAttribute('stroke-width', strokeUnits);
   sizePreview.setAttribute('stroke-width', strokeUnits);
   sizePreview.setAttribute('stroke', current);
+
+  const veilPercent = Math.round(screenVeil * 100);
+  if (Number(veilSlider.value) !== veilPercent) veilSlider.value = String(veilPercent);
+  veilValue.textContent = veilPercent <= 0 ? 'Off' : `${veilPercent}%`;
+  veilBtn.classList.toggle('lit', veilPercent > 0);
 }
 for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
   inputEl.addEventListener(type, type === 'pointerdown' ? pointerDown : type === 'pointermove' ? pointerMove : pointerUp, { passive: false });
@@ -1759,10 +2061,698 @@ document.addEventListener('touchmove', onTouchMove, touchOpts);
 document.addEventListener('touchend', onTouchEnd, touchOpts);
 document.addEventListener('touchcancel', onTouchEnd, touchOpts);
 
+/* ======================================================================================================
+ * Capture library and document mode
+ * ==================================================================================================== */
+
+const captureBtn = document.getElementById('captureBtn');
+const libraryBtn = document.getElementById('libraryBtn');
+const backBtn = document.getElementById('backBtn');
+const libraryEl = document.getElementById('library');
+const libClose = document.getElementById('libClose');
+const libRefresh = document.getElementById('libRefresh');
+const libCount = document.getElementById('libCount');
+const libGrid = document.getElementById('libGrid');
+const libEmpty = document.getElementById('libEmpty');
+const libError = document.getElementById('libError');
+const docChip = document.getElementById('docChip');
+const docChipIcon = document.getElementById('docChipIcon');
+const docChipText = document.getElementById('docChipText');
+const docBanner = document.getElementById('docBanner');
+const docBannerText = document.getElementById('docBannerText');
+const docKeepMine = document.getElementById('docKeepMine');
+const docLoadPc = document.getElementById('docLoadPc');
+const toastEl = document.getElementById('toast');
+const toastText = document.getElementById('toastText');
+const toastAction = document.getElementById('toastAction');
+
+doc.savePromise = null;
+let libraryItems = [];
+let toastTimer = null;
+
+function libErrorText(err) {
+  if (err instanceof LibraryError) {
+    if (err.status === 401) return 'Library access expired. Reconnecting…';
+    if (err.status === 403) return 'The PC refused this device.';
+    if (err.status === 404) return 'Capture not found.';
+  }
+  return 'Could not reach the PC.';
+}
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  toastEl.classList.add('panel-hidden');
+}
+
+function showToast(text, { kind = 'info', action = null, ms = 4500 } = {}) {
+  clearTimeout(toastTimer);
+  toastEl.dataset.kind = kind;
+  toastText.textContent = text;
+  if (action) {
+    toastAction.textContent = action.label;
+    toastAction.onclick = () => { hideToast(); action.run(); };
+    toastAction.classList.remove('panel-hidden');
+  } else {
+    toastAction.onclick = null;
+    toastAction.classList.add('panel-hidden');
+  }
+  toastEl.classList.remove('panel-hidden');
+  toastTimer = setTimeout(hideToast, ms);
+}
+
+/* ---------- Document chip and conflict banner ---------- */
+
+function setDocChip(text, state) {
+  // Called for every eraser segment via docMarkDirty; skip DOM writes when nothing changed.
+  if (docChipText.textContent === text && docChip.dataset.state === state && !docChip.classList.contains('panel-hidden')) return;
+  docChipText.textContent = text;
+  docChip.dataset.state = state;
+  docChipIcon.innerHTML = icon(state === 'ok' ? 'check' : state === 'error' ? 'wifiOff' : 'loader', 16);
+  docChip.classList.remove('panel-hidden');
+}
+
+function refreshDocChip() {
+  if (!docMode) {
+    docChip.classList.add('panel-hidden');
+    return;
+  }
+  if (doc.conflict) setDocChip(`${doc.name} · Conflict`, 'error');
+  else if (doc.saving) setDocChip(`${doc.name} · Saving…`, 'connecting');
+  else if (doc.dirty) setDocChip(`${doc.name} · Unsaved`, 'warn');
+  else setDocChip(`${doc.name} · Saved`, 'ok');
+}
+
+function showConflictBanner(text = 'This capture was changed on the PC.') {
+  docBannerText.textContent = text;
+  docBanner.classList.remove('panel-hidden');
+  refreshDocChip();
+}
+
+function hideConflictBanner() {
+  docBanner.classList.add('panel-hidden');
+}
+
+/* ---------- Library grid ---------- */
+
+function showLibraryError(text) {
+  libError.textContent = text;
+  libError.classList.remove('panel-hidden');
+  libEmpty.classList.add('panel-hidden');
+  libCount.textContent = '';
+}
+
+async function refreshLibrary({ silent = false } = {}) {
+  if (!libToken) {
+    showLibraryError('The capture library is not available for this device.');
+    return;
+  }
+  if (!silent) libCount.textContent = 'Loading…';
+  try {
+    libraryItems = await libraryApi.list();
+  } catch (err) {
+    if (libraryOpen) showLibraryError(libErrorText(err));
+    return;
+  }
+  if (!libraryOpen) return;
+  libError.classList.add('panel-hidden');
+  renderLibraryGrid(libGrid, libraryItems, libraryApi, {
+    onOpen: (item) => openDocument(item.id, item.name),
+    onDelete: deleteCapture
+  });
+  libEmpty.classList.toggle('panel-hidden', libraryItems.length > 0);
+  libCount.textContent = `${libraryItems.length} capture${libraryItems.length === 1 ? '' : 's'}`;
+}
+
+async function deleteCapture(item) {
+  try {
+    await libraryApi.remove(item.id);
+  } catch (err) {
+    showToast(`Could not delete: ${libErrorText(err)}`, { kind: 'error' });
+    throw err;
+  }
+  await refreshLibrary({ silent: true });
+}
+
+function openLibrary() {
+  closePopover();
+  libraryOpen = true;
+  libraryEl.classList.remove('panel-hidden');
+  refreshLibrary();
+}
+
+function closeLibrary() {
+  libraryOpen = false;
+  libraryEl.classList.add('panel-hidden');
+}
+
+/* ---------- Capture from the iPad ---------- */
+
+function endCaptureBusy() {
+  clearTimeout(captureBusyTimer);
+  captureBusyTimer = null;
+  captureBtn.classList.remove('busy');
+}
+
+function startCapture() {
+  if (!sessionReady || !libToken || captureBtn.classList.contains('busy')) return;
+  captureBtn.classList.add('busy');
+  clearTimeout(captureBusyTimer);
+  captureBusyTimer = setTimeout(() => {
+    endCaptureBusy();
+    showToast('Capture timed out.', { kind: 'error' });
+  }, 10000);
+  send({ t: 'capture' });
+}
+
+function onCaptured(id) {
+  endCaptureBusy();
+  showToast('Captured', { action: { label: 'Open', run: () => openDocument(id, id) }, ms: 7000 });
+  if (libraryOpen) refreshLibrary({ silent: true });
+}
+
+function onCaptureFailed(message) {
+  endCaptureBusy();
+  showToast(message || 'Capture failed.', { kind: 'error', ms: 6000 });
+}
+
+/* ---------- Notifications from the PC ---------- */
+
+function isDrawingNow() {
+  return drawPointerId !== null || stylusDrawTouchId !== null || Boolean(frameCanvas._activeStrokeId) || Boolean(shapeDrag) || Boolean(eraseGesture);
+}
+
+async function onLibraryChanged() {
+  if (libraryOpen) refreshLibrary({ silent: true });
+  if (!docMode || !doc.id) return;
+  // The open capture may have been deleted on the PC.
+  try {
+    const items = await libraryApi.list();
+    if (docMode && doc.id && !items.some(i => i.id === doc.id)) onDocDeleted();
+  } catch {
+    /* offline: the next save reports it */
+  }
+}
+
+function onLibraryItemChanged(id, rev) {
+  if (libraryOpen) refreshLibrary({ silent: true });
+  if (!docMode || id !== doc.id || rev === doc.rev) return;
+  if (doc.saving) {
+    doc.remoteRevDuringSave = rev;
+    return;
+  }
+  handleRemoteDocChange(rev);
+}
+
+/** The PC copy of the open capture changed (PC editor saved it). Reload if we are clean, otherwise ask. */
+function handleRemoteDocChange(rev) {
+  if (!docMode || rev === doc.rev) return;
+  if (doc.dirty) {
+    doc.conflict = { rev };
+    showConflictBanner('Changed on the PC while you have unsaved edits.');
+    return;
+  }
+  if (isDrawingNow()) {
+    setTimeout(() => handleRemoteDocChange(rev), 500);
+    return;
+  }
+  log(`capture reloading: PC revision ${doc.rev} -> ${rev}`);
+  openDocument(doc.id, doc.name, { discard: true, keepView: true, silent: true });
+}
+
+function onLibraryReconnected() {
+  if (docMode) {
+    // The new socket starts in live mode on the PC; tell it we are still editing a capture.
+    send({ t: 'viewMode', mode: 'doc' });
+    if (doc.dirty && !doc.conflict) scheduleSave(0);
+  }
+  if (libraryOpen) refreshLibrary({ silent: true });
+}
+
+function onDocDeleted() {
+  doc.dirty = false;
+  doc.conflict = null;
+  showToast('This capture was deleted on the PC.', { kind: 'error', ms: 6000 });
+  closeDocument(true);
+}
+
+/* ---------- Opening and closing a capture ---------- */
+
+function enterDocMode() {
+  liveSaved = { frameBitmap, view: { ...view } };
+  docMode = true;
+  hudEl.dataset.mode = 'doc';
+  closePopover();
+  clearVectorInkLayers();
+  frameCanvas._activeStrokeId = null;
+  eraserCursor = null;
+  shapeDrag = null;
+  // Editing needs no live frames; the PC stops sending them to this device.
+  send({ t: 'viewMode', mode: 'doc' });
+}
+
+async function openDocument(id, name, { discard = false, keepView = false, silent = false } = {}) {
+  if (docMode && doc.id && !discard && !(await flushDocument())) return;
+  const seq = ++doc.loadSeq;
+  if (!silent) {
+    closeLibrary();
+    showToast('Opening…', { ms: 20000 });
+  }
+
+  let image;
+  let data;
+  try {
+    [image, data] = await Promise.all([libraryApi.image(id), libraryApi.strokes(id)]);
+  } catch (err) {
+    if (seq !== doc.loadSeq) return;
+    showToast(`Could not open: ${libErrorText(err)}`, { kind: 'error', ms: 6000 });
+    if (!silent && !docMode) openLibrary();
+    return;
+  }
+  if (seq !== doc.loadSeq) return;
+  hideToast();
+
+  if (!docMode) enterDocMode();
+
+  doc.id = id;
+  doc.name = name || id;
+  doc.rev = data.rev;
+  doc.w = data.w || image.width;
+  doc.h = data.h || image.height;
+  // Same logical-unit scheme as the live screen: a pen size is a "PC pixel", so a 4K capture (2x) gets 2x wide ink.
+  doc.scale = Math.max(1, doc.w / 1920);
+  screenW = doc.w / doc.scale;
+  screenH = doc.h / doc.scale;
+  frameBitmap = image;
+
+  clearVectorInkLayers();
+  let n = 0;
+  for (const s of data.strokes || []) {
+    if (!s.pts || s.pts.length < 3) continue;
+    const pts = new Array(s.pts.length);
+    for (let i = 0; i + 2 < s.pts.length; i += 3) {
+      pts[i] = s.pts[i] / doc.w;
+      pts[i + 1] = s.pts[i + 1] / doc.h;
+      pts[i + 2] = s.pts[i + 2];
+    }
+    // A one-point stroke (a dot) needs a second point to be drawn with round caps.
+    if (pts.length === 3) pts.push(pts[0], pts[1], pts[2]);
+    vectorInk.set(`doc:${n++}`, {
+      color: normalizeColorHex(s.color),
+      size: s.size / doc.scale,
+      pts,
+      presmoothed: true,
+      usePressure: !s.ignorePressure
+    });
+  }
+
+  clearTimeout(doc.saveTimer);
+  doc.saveTimer = null;
+  doc.dirty = false;
+  doc.saving = false;
+  doc.conflict = null;
+  doc.remoteRevDuringSave = null;
+  doc.undo = [];
+  doc.redo = [];
+  doc.eraseSnap = null;
+  doc.strokeSnap = null;
+  hideConflictBanner();
+  if (!keepView) resetView();
+  refreshDocChip();
+  updateUi();
+  redraw();
+}
+
+/** Leaves the capture and returns to the live screen (or the library grid). Stays put if unsaved edits cannot be saved. */
+async function closeDocument(toLibrary) {
+  if (!docMode) return;
+  if (!(await flushDocument())) return;
+  doc.loadSeq += 1;
+  clearTimeout(doc.saveTimer);
+  doc.saveTimer = null;
+  docMode = false;
+  hudEl.dataset.mode = 'live';
+  const saved = liveSaved;
+  liveSaved = null;
+  frameBitmap = saved ? saved.frameBitmap : null;
+  if (saved) Object.assign(view, saved.view);
+  screenW = liveScreenW;
+  screenH = liveScreenH;
+  doc.id = null;
+  doc.dirty = false;
+  doc.saving = false;
+  doc.conflict = null;
+  doc.undo = [];
+  doc.redo = [];
+  doc.eraseSnap = null;
+  doc.strokeSnap = null;
+  clearVectorInkLayers();
+  hideConflictBanner();
+  refreshDocChip();
+  // Back to the live screen: the PC resumes frames (and sends one immediately), and takes our tool settings
+  // again, since they were kept local while editing the capture.
+  send({ t: 'viewMode', mode: 'live' });
+  send({ t: 'setTool', tool });
+  send({ t: 'setColor', color });
+  send({ t: 'setSize', size });
+  updateUi();
+  redraw();
+  if (toLibrary) openLibrary();
+}
+
+/* ---------- Saving ---------- */
+
+function scheduleSave(ms) {
+  clearTimeout(doc.saveTimer);
+  doc.saveTimer = setTimeout(() => {
+    doc.saveTimer = null;
+    docSave();
+  }, ms);
+}
+
+function docMarkDirty() {
+  doc.dirty = true;
+  doc.editSeq += 1;
+  refreshDocChip();
+  if (!doc.conflict) scheduleSave(DOC_SAVE_DELAY_MS);
+}
+
+const round2 = (v) => Math.round(v * 100) / 100;
+const round3 = (v) => Math.round(v * 1000) / 1000;
+
+/** Ink in the PC's format: image pixels, pen width in pixels, smoothed points (what the PC editor stores). */
+function docSerialize() {
+  // Each stroke's JSON is cached on the stroke, so an autosave only converts strokes that changed since the last
+  // one; the rest is string concatenation. (Rewriting every point of a page of handwriting on each autosave is
+  // what made the pen stutter while saving.)
+  const pieces = [];
+  for (const st of vectorInk.values()) {
+    const pts = getSmoothedPts(st);
+    if (!pts || pts.length < 3) continue;
+    const usePressure = st.usePressure ?? pressureSensitive;
+    const key = `${pts.length}|${doc.w}|${doc.h}|${doc.scale}|${st.color}|${st.size}|${usePressure}`;
+    if (st._serKey !== key) {
+      const flat = new Array(pts.length);
+      for (let i = 0; i + 2 < pts.length; i += 3) {
+        flat[i] = round2(pts[i] * doc.w);
+        flat[i + 1] = round2(pts[i + 1] * doc.h);
+        flat[i + 2] = round3(pts[i + 2] ?? 0.5);
+      }
+      st._serJson = JSON.stringify({
+        color: normalizeColorHex(st.color),
+        size: Math.max(0.5, round2(st.size * doc.scale)),
+        pts: flat,
+        ignorePressure: !usePressure
+      });
+      st._serKey = key;
+    }
+    pieces.push(st._serJson);
+  }
+  return `[${pieces.join(',')}]`;
+}
+
+function docSave(force = false) {
+  if (doc.savePromise) return doc.savePromise;
+  doc.savePromise = runSave(force).finally(() => { doc.savePromise = null; });
+  return doc.savePromise;
+}
+
+async function runSave(force = false) {
+  clearTimeout(doc.saveTimer);
+  doc.saveTimer = null;
+  if (!docMode || !doc.id || !doc.dirty || doc.conflict) return;
+  // Never start an autosave under the pen: wait for the next pause. (Leaving the capture forces it.)
+  if (!force && isDrawingNow()) {
+    scheduleSave(600);
+    return;
+  }
+  if (!libToken) {
+    // Not connected right now; stay dirty. A reconnect triggers a save, and this retries as well.
+    scheduleSave(4000);
+    return;
+  }
+
+  const mark = doc.editSeq;
+  const payload = docSerialize();
+  doc.saving = true;
+  doc.remoteRevDuringSave = null;
+  refreshDocChip();
+  const saveStarted = performance.now();
+  if (debugLog) log(`save start: ${vectorInk.size} strokes, ${Math.round(payload.length / 1024)} KB`);
+  try {
+    const res = await libraryApi.save(doc.id, doc.rev, payload);
+    if (debugLog) log(`save done in ${Math.round(performance.now() - saveStarted)} ms`);
+    doc.rev = res.rev;
+    // Edits made while this save was in flight keep the document dirty.
+    if (doc.editSeq === mark) doc.dirty = false;
+    doc.saving = false;
+    const remote = doc.remoteRevDuringSave;
+    doc.remoteRevDuringSave = null;
+    // The PC reported a different revision mid-save: something other than our own write changed it.
+    if (remote && remote !== doc.rev) handleRemoteDocChange(remote);
+  } catch (err) {
+    doc.saving = false;
+    if (err instanceof LibraryError && err.status === 409) {
+      doc.conflict = { rev: (err.body && err.body.rev) || null };
+      showConflictBanner('This capture was changed on the PC.');
+    } else if (err instanceof LibraryError && err.status === 404) {
+      onDocDeleted();
+      return;
+    } else {
+      // Offline, expired token or a server error: stay dirty and retry. Nothing is lost or overwritten, because
+      // every retry still sends the revision we last loaded.
+      scheduleSave(4000);
+    }
+  }
+  refreshDocChip();
+  if (doc.dirty && !doc.conflict && !doc.saveTimer) scheduleSave(DOC_SAVE_DELAY_MS);
+}
+
+/** Saves pending edits now. Resolves false (after telling the user) if they could not be saved. */
+async function flushDocument() {
+  if (!docMode || !doc.id) return true;
+  clearTimeout(doc.saveTimer);
+  doc.saveTimer = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (doc.conflict) {
+      showConflictBanner('Resolve this before leaving the capture.');
+      return false;
+    }
+    if (!doc.dirty && !doc.saving) return true;
+    await docSave(true);
+  }
+  if (!doc.dirty && !doc.saving) return true;
+  showToast("Couldn't save to the PC. Check the connection.", { kind: 'error', ms: 6000 });
+  return false;
+}
+
+/* ---------- Editing (stroke sink for document mode) ---------- */
+
+function docPushUndo(snapshot) {
+  doc.undo.push(snapshot);
+  if (doc.undo.length > DOC_UNDO_LIMIT) doc.undo.shift();
+  doc.redo.length = 0;
+}
+
+function docRestore(map) {
+  vectorInk.clear();
+  for (const [k, v] of map) vectorInk.set(k, v);
+  docMarkDirty();
+  redraw();
+}
+
+function docUndo() {
+  const previous = doc.undo.pop();
+  if (!previous) return;
+  doc.redo.push(new Map(vectorInk));
+  docRestore(previous);
+}
+
+function docRedo() {
+  const next = doc.redo.pop();
+  if (!next) return;
+  doc.undo.push(new Map(vectorInk));
+  docRestore(next);
+}
+
+function docClear() {
+  if (!vectorInk.size) return;
+  const snapshot = new Map(vectorInk);
+  vectorInk.clear();
+  docPushUndo(snapshot);
+  docMarkDirty();
+  redraw();
+}
+
+function docFinishStroke(id) {
+  const stroke = activeLocal.get(id);
+  if (!stroke) return;
+  // A tap is a single point; a second identical point makes it render as a dot.
+  if (stroke.pts.length === 3) stroke.pts.push(stroke.pts[0], stroke.pts[1], stroke.pts[2]);
+  const snapshot = doc.strokeSnap || new Map(vectorInk);
+  doc.strokeSnap = null;
+  const versionBefore = vectorInk.version;
+  commitLocalStrokeToVector(id);
+  appendCommittedStroke(id, versionBefore);
+  docPushUndo(snapshot);
+  docMarkDirty();
+  // Ink layers only: the capture image didn't change, and repainting it per stroke is what hitched quick writing.
+  redrawInk();
+}
+
+/** A drawn shape becomes a polyline stroke so it survives the PC's ink format and can be erased there too. */
+function shapeToPoints(m) {
+  const sx = screenW || 1920;
+  const sy = screenH || 1080;
+  const x1 = m.x1 * sx, y1 = m.y1 * sy, x2 = m.x2 * sx, y2 = m.y2 * sy;
+  if (Math.hypot(x2 - x1, y2 - y1) < 1.5) return null;
+  const out = [];
+  const push = (x, y) => out.push(x / sx, y / sy, 0.5);
+  if (m.tool === 'Rectangle') {
+    const l = Math.min(x1, x2), r = Math.max(x1, x2), t = Math.min(y1, y2), b = Math.max(y1, y2);
+    push(l, t); push(r, t); push(r, b); push(l, b); push(l, t);
+  } else if (m.tool === 'Ellipse') {
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    const rx = Math.abs(x2 - x1) / 2, ry = Math.abs(y2 - y1) / 2;
+    const steps = 72;
+    for (let i = 0; i <= steps; i++) {
+      const a = 2 * Math.PI * i / steps;
+      push(cx + Math.cos(a) * rx, cy + Math.sin(a) * ry);
+    }
+  } else {
+    push(x1, y1);
+    push(x2, y2);
+    if (m.tool === 'Arrow') {
+      // Same head as the live screen and the PC (ShapeDrawingHelper.AddArrowHead), drawn as one polyline.
+      const ang = Math.atan2(y2 - y1, x2 - x1);
+      const head = Math.max(8, m.size * 3);
+      push(x2 - head * Math.cos(ang - 0.5), y2 - head * Math.sin(ang - 0.5));
+      push(x2, y2);
+      push(x2 - head * Math.cos(ang + 0.5), y2 - head * Math.sin(ang + 0.5));
+    }
+  }
+  return out;
+}
+
+function docAddShape(m) {
+  const pts = shapeToPoints(m);
+  if (!pts) return;
+  const snapshot = new Map(vectorInk);
+  const versionBefore = vectorInk.version;
+  vectorInk.set(m.id, { color: normalizeColorHex(m.color), size: m.size, pts, presmoothed: true, usePressure: false });
+  appendCommittedStroke(m.id, versionBefore);
+  docPushUndo(snapshot);
+  docMarkDirty();
+  redrawInk();
+}
+
+function docEraseSegment(ax, ay, bx, by, whole) {
+  // One undo step per eraser gesture: snapshot before the first cut, push when the gesture ends.
+  const before = doc.eraseSnap ? null : new Map(vectorInk);
+  if (eraseLocalAt(ax, ay, bx, by, whole)) {
+    if (!doc.eraseSnap) doc.eraseSnap = before;
+    docMarkDirty();
+  }
+  // No gesture in progress means this was a tap-erase fired from a timer: finish it right away.
+  if (!eraseGesture) docFinishErase();
+}
+
+function docFinishErase() {
+  if (!doc.eraseSnap) return;
+  docPushUndo(doc.eraseSnap);
+  doc.eraseSnap = null;
+}
+
+/** All drawing messages for the current capture land here instead of the socket. */
+function docHandle(msg) {
+  switch (msg.t) {
+    case 'strokeBegin':
+      doc.strokeSnap = new Map(vectorInk);
+      break;
+    case 'strokeEnd':
+      docFinishStroke(msg.id);
+      break;
+    case 'shapeCommit':
+      docAddShape(msg);
+      break;
+    case 'undo':
+      docUndo();
+      break;
+    case 'redo':
+      docRedo();
+      break;
+    case 'clear':
+      docClear();
+      break;
+    default:
+      // strokePoints are already in activeLocal; tool/colour/size/pressure/veil changes stay on this device.
+      break;
+  }
+}
+
+/* ---------- Wiring ---------- */
+
+function initLibraryUi() {
+  captureBtn.innerHTML = icon('camera', 22);
+  libraryBtn.innerHTML = icon('library', 22);
+  backBtn.innerHTML = icon('arrowLeft', 22);
+  libClose.innerHTML = icon('x', 22);
+  libRefresh.innerHTML = icon('refresh', 22);
+
+  captureBtn.onclick = () => { closePopover(); startCapture(); };
+  libraryBtn.onclick = () => { closePopover(); openLibrary(); };
+  backBtn.onclick = () => { closePopover(); closeDocument(true); };
+  libClose.onclick = closeLibrary;
+  libRefresh.onclick = () => refreshLibrary();
+
+  docKeepMine.onclick = async () => {
+    if (!doc.conflict) { hideConflictBanner(); return; }
+    let rev = doc.conflict.rev;
+    if (!rev) {
+      try {
+        rev = (await libraryApi.strokes(doc.id)).rev;
+      } catch (err) {
+        showToast(`Could not check the PC copy: ${libErrorText(err)}`, { kind: 'error' });
+        return;
+      }
+    }
+    // Adopt the PC's current revision so the next save overwrites it with our version.
+    doc.rev = rev;
+    doc.conflict = null;
+    hideConflictBanner();
+    docMarkDirty();
+    docSave();
+  };
+  docLoadPc.onclick = () => {
+    hideConflictBanner();
+    openDocument(doc.id, doc.name, { discard: true, keepView: true, silent: true });
+  };
+}
+
+/** Debug-log only: shows whether input vanishes because the page stalled or because the OS cancelled the touch. */
+function initDiagnostics() {
+  let last = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    const gap = now - last - 50;
+    last = now;
+    if (debugLog && gap > 120 && !document.hidden) {
+      const state = docMode ? ` (capture ${doc.saving ? 'saving' : doc.dirty ? 'unsaved' : 'saved'}, ${vectorInk.size} strokes)` : '';
+      log(`page stalled ${Math.round(gap)} ms${state}`);
+    }
+  }, 50);
+  for (const type of ['pointercancel', 'lostpointercapture', 'touchcancel']) {
+    document.addEventListener(type, (e) => {
+      if (debugLog) log(`${type} ${e.pointerType || ''} ${e.pointerId ?? ''}`.trim());
+    }, true);
+  }
+}
+
 buildDock();
+initLibraryUi();
+initDiagnostics();
 setDockEdge(dockEdge, { persist: false });
 initDockDrag();
 updateUi();
 initSettingsUi();
-log(`page v11`, { alwaysShow: debugLog });
+log(`page v12`, { alwaysShow: debugLog });
 connect();

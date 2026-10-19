@@ -173,6 +173,38 @@
                                 </StackPanel>
                             </Border>
                         </Popup>
+
+                        <!-- Screen veil: a white wash over the screen, under the ink, so sketches stand out -->
+                        <ToggleButton x:Name="VeilButton" ToolTip="Screen veil"
+                                      IsChecked="{Binding IsOpen, ElementName=VeilPopup, Mode=TwoWay}">
+                            <ToggleButton.Style>
+                                <Style TargetType="ToggleButton" BasedOn="{StaticResource DockPopupToggle}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsOpen, ElementName=VeilPopup}" Value="True">
+                                            <Setter Property="IsHitTestVisible" Value="False" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ToggleButton.Style>
+                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconContrast}" />
+                        </ToggleButton>
+                        <Popup x:Name="VeilPopup" PlacementTarget="{Binding ElementName=VeilButton}"
+                               Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+                            <Border Style="{StaticResource PopoverCard}">
+                                <StackPanel Width="236">
+                                    <Grid Margin="0,0,0,12">
+                                        <TextBlock Text="SCREEN VEIL" Style="{StaticResource SectionLabel}" Margin="0" />
+                                        <TextBlock x:Name="VeilValue" HorizontalAlignment="Right" FontSize="12"
+                                                   FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                                    </Grid>
+                                    <Slider x:Name="VeilSlider" Style="{StaticResource ThemedSlider}"
+                                            Minimum="0" Maximum="60" Value="0" TickFrequency="5" IsSnapToTickEnabled="True"
+                                            ValueChanged="VeilSlider_ValueChanged" />
+                                    <TextBlock Style="{StaticResource RowDesc}" TextWrapping="Wrap" Margin="0,10,0,0"
+                                               Text="Washes the screen toward white, under your ink, so sketches stand out. Also applies to the tablet stream." />
+                                </StackPanel>
+                            </Border>
+                        </Popup>
                     </StackPanel>
 
                     <Border Style="{StaticResource ToolbarDivider}" />
@@ -216,6 +248,10 @@
                                 </Button>
                             </StackPanel>
                         </Border>
+                        <Button x:Name="EditorButton" Style="{StaticResource DockButton}" Margin="5,1,1,1"
+                                ToolTip="Open editor / capture library" Click="OpenEditor_Click">
+                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconImages}" />
+                        </Button>
                     </StackPanel>
 
                     <Border Style="{StaticResource ToolbarDivider}" />

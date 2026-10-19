@@ -30,7 +30,27 @@ public sealed record RemoteWelcome(
     double ScreenW,
     double ScreenH,
     RemoteState State,
-    long InkRevision);
+    long InkRevision,
+    /// <summary>Capability token for the /lib HTTP endpoints. Only sent to the paired owner device.</summary>
+    string? LibToken = null);
+
+/// <summary>iPad to PC: take a screenshot into the capture library.</summary>
+public sealed record RemoteCapture();
+
+/// <summary>iPad to PC: "live" (receives screen frames) or "doc" (editing a library capture, frames paused).</summary>
+public sealed record RemoteViewMode(string Mode);
+
+/// <summary>PC to iPad: the capture was saved to the library.</summary>
+public sealed record RemoteCaptured(string Id);
+
+/// <summary>PC to iPad: the capture could not be taken (locked screen, display off, ...).</summary>
+public sealed record RemoteCaptureFailed(string Message);
+
+/// <summary>PC to iPad: captures were added, removed or renamed.</summary>
+public sealed record RemoteLibraryChanged();
+
+/// <summary>PC to iPad: one capture's image or ink was written (by the PC editor or another save).</summary>
+public sealed record RemoteLibraryItemChanged(string Id, string Rev);
 
 public sealed record RemoteState(
     string Tool,
@@ -40,9 +60,13 @@ public sealed record RemoteState(
     double ScreenW,
     double ScreenH,
     bool RegionActive,
-    bool PressureSensitive = true);
+    bool PressureSensitive = true,
+    double ScreenVeil = 0);
 
 public sealed record RemoteSetPressure(bool Enabled);
+
+/// <summary>White veil over the screen (under the ink), 0–0.6. The PC renders it, so it shows in the stream.</summary>
+public sealed record RemoteSetVeil(double Value);
 
 public sealed record RemoteAck(Guid Id, long InkRevision);
 

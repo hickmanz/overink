@@ -14,6 +14,8 @@ public sealed class AppSettings
     public double PenThickness { get; set; } = 4;
     /// <summary>When false, strokes use a constant width instead of varying with pen pressure.</summary>
     public bool PressureSensitive { get; set; } = true;
+    /// <summary>Opacity (0 – 0.6) of the white veil laid over the screen, under the ink, while drawing. 0 = off.</summary>
+    public double ScreenVeilOpacity { get; set; }
     public bool RunAtStartup { get; set; }
     public bool HideToolbarWhenNotDrawing { get; set; }
     public uint HotkeyModifiers { get; set; } = NativeMethodsDefaults.DefaultHotkeyModifiers;
@@ -30,6 +32,8 @@ public sealed class AppSettings
     public int RemoteMaxClients { get; set; } = 8;
     public bool RemoteRequireJoinApproval { get; set; }
     public List<PairedDevice> PairedDevices { get; set; } = new();
+    /// <summary>Lets the paired iPad browse, edit and create captures in the library.</summary>
+    public bool RemoteLibraryEnabled { get; set; } = true;
 
     /// <summary>Empty uses Pictures\OverInk.</summary>
     public string LibraryFolder { get; set; } = string.Empty;

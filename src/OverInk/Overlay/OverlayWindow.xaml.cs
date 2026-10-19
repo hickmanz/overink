@@ -171,6 +171,64 @@ public partial class OverlayWindow : Window
         CaptureRegionOutline.Visibility = Visibility.Visible;
     }
 
+    /// <summary>
+    /// Hides the drawn ink and shapes (the white veil stays) until the returned object is disposed, so a screen
+    /// capture shows the clean screen and the ink can be saved separately as editable strokes.
+    /// </summary>
+    public IDisposable HideInkForCapture()
+    {
+        var inkVisibility = InkSurface.Visibility;
+        var shapeVisibility = ShapeLayer.Visibility;
+        InkSurface.Visibility = Visibility.Hidden;
+        ShapeLayer.Visibility = Visibility.Hidden;
+        return new RestoreOnDispose(() =>
+        {
+            InkSurface.Visibility = inkVisibility;
+            ShapeLayer.Visibility = shapeVisibility;
+        });
+    }
+
+    /// <summary>
+    /// Everything drawn on the overlay as one stroke collection, transformed by <paramref name="dipsToPixels"/>
+    /// (overlay DIPs to capture-image pixels). Shapes become polyline strokes so they stay editable (and
+    /// erasable) in the editors. In-progress previews are left out.
+    /// </summary>
+    public StrokeCollection ExportInk(Matrix dipsToPixels)
+    {
+        var result = new StrokeCollection();
+        foreach (var stroke in InkSurface.Strokes)
+        {
+            result.Add(stroke.Clone());
+        }
+
+        foreach (var element in ShapeLayer.Children.Cast<UIElement>())
+        {
+            if (ReferenceEquals(element, _shapePreview) || _remoteShapePreviews.ContainsValue(element))
+            {
+                continue;
+            }
+
+            foreach (var stroke in ShapeStrokeConverter.ToStrokes(element))
+            {
+                result.Add(stroke);
+            }
+        }
+
+        result.Transform(dipsToPixels, applyToStylusTip: true);
+        return result;
+    }
+
+    private sealed class RestoreOnDispose(Action restore) : IDisposable
+    {
+        private Action? _restore = restore;
+
+        public void Dispose()
+        {
+            _restore?.Invoke();
+            _restore = null;
+        }
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
@@ -243,6 +301,36 @@ public partial class OverlayWindow : Window
             IgnorePressure = !_session.PressureSensitive
         };
         InkSurface.DefaultDrawingAttributes = attributes;
+
+        UpdateVeil();
+    }
+
+    private bool _remoteActive;
+    private bool _editorOpen;
+
+    /// <summary>
+    /// The veil shows while drawing on the PC, or while a remote tablet is connected (tablet strokes
+    /// don't need the PC in draw mode). Otherwise the screen looks normal for working in other apps.
+    /// </summary>
+    private void UpdateVeil()
+    {
+        var active = _session.Mode == InteractionMode.Draw || _remoteActive;
+        var show = active && !_editorOpen && _session.ScreenVeil > 0;
+        ScreenVeil.Opacity = show ? _session.ScreenVeil : 0;
+        ScreenVeil.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public void SetRemoteActive(bool active)
+    {
+        _remoteActive = active;
+        UpdateVeil();
+    }
+
+    /// <summary>The editor is a normal window below this topmost overlay, so the veil is hidden while it is open.</summary>
+    public void SetEditorOpen(bool open)
+    {
+        _editorOpen = open;
+        UpdateVeil();
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]

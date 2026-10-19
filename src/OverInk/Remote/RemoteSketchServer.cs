@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using OverInk.Editor;
 using OverInk.Input;
 using OverInk.Models;
 using OverInk.Overlay;
@@ -29,6 +30,7 @@ public sealed class RemoteSketchServer : IDisposable
     private readonly SketchSession _session;
     private readonly OverlayWindow _overlay;
     private readonly FrameStreamer _frameStreamer;
+    private readonly RemoteLibraryService _library;
 
     private WebApplication? _app;
     private readonly ConcurrentDictionary<string, RemoteConnectedClient> _clients = new();
@@ -39,13 +41,16 @@ public sealed class RemoteSketchServer : IDisposable
         PairingService pairing,
         RemoteStrokeSource strokeSource,
         SketchSession session,
-        OverlayWindow overlay)
+        OverlayWindow overlay,
+        CaptureLibrary captureLibrary)
     {
         _settings = settings;
         _pairing = pairing;
         _strokeSource = strokeSource;
         _session = session;
         _overlay = overlay;
+        _library = new RemoteLibraryService(captureLibrary, () => _settings.Current.RemoteLibraryEnabled);
+        _library.Changed += OnLibraryContentChanged;
         _frameStreamer = new FrameStreamer(overlay, () => _settings.Current);
         _frameStreamer.FrameReady += OnFrameReady;
         _settings.RemoteStreamSettingsChanged += () => _frameStreamer.RequestImmediateFrame();
@@ -84,6 +89,36 @@ public sealed class RemoteSketchServer : IDisposable
 
     public event Action<int>? ClientCountChanged;
     public event Func<string, string, Task<bool>>? JoinApprovalRequired;
+
+    /// <summary>
+    /// Takes a screenshot into the library (called on the UI thread). Returns the new capture's id, or an error
+    /// message for the iPad when nothing usable was captured.
+    /// </summary>
+    public Func<(string? Id, string? Error)>? CaptureToLibraryHandler { get; set; }
+
+    private void OnLibraryContentChanged(bool listChanged, IReadOnlyList<(string Id, string Rev)> changed)
+    {
+        if (listChanged)
+        {
+            BroadcastToLibraryClients(Wrap("libraryChanged", new RemoteLibraryChanged()));
+        }
+
+        foreach (var (id, rev) in changed)
+        {
+            BroadcastToLibraryClients(Wrap("libraryItemChanged", new RemoteLibraryItemChanged(id, rev)));
+        }
+    }
+
+    private void BroadcastToLibraryClients(string json)
+    {
+        foreach (var client in _clients.Values)
+        {
+            if (client.LibToken is not null)
+            {
+                client.TryEnqueueControl(json);
+            }
+        }
+    }
 
     public int ConnectedClients => _clients.Count;
     public bool IsRunning => _app is not null;
@@ -153,6 +188,7 @@ public sealed class RemoteSketchServer : IDisposable
         });
 
         app.MapGet("/health", () => Results.Ok(new { ok = true }));
+        _library.Map(app);
 
         await app.StartAsync().ConfigureAwait(false);
         _app = app;
@@ -168,6 +204,7 @@ public sealed class RemoteSketchServer : IDisposable
         }
 
         _clients.Clear();
+        _library.RevokeAll();
         NotifyClientCountChanged();
 
         if (_app is null)
@@ -224,7 +261,7 @@ public sealed class RemoteSketchServer : IDisposable
 
         foreach (var client in _clients.Values)
         {
-            if (client.StreamEnabled)
+            if (client.StreamActive)
             {
                 client.TryEnqueueFrame(frame);
             }
@@ -318,6 +355,14 @@ public sealed class RemoteSketchServer : IDisposable
                         break;
                     }
 
+                    // Only the paired owner device gets library access; session-link participants never do.
+                    string? libToken = null;
+                    if (auth.libraryDeviceId is not null && _settings.Current.RemoteLibraryEnabled)
+                    {
+                        libToken = _library.IssueToken(auth.libraryDeviceId, clientId);
+                        client.LibToken = libToken;
+                    }
+
                     var welcome = await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         var stream = CaptureRegionHelper.GetStreamDips(_settings.Current);
@@ -328,7 +373,8 @@ public sealed class RemoteSketchServer : IDisposable
                             stream.Width,
                             stream.Height,
                             BuildState(),
-                            _overlay.InkRevision);
+                            _overlay.InkRevision,
+                            libToken);
                     }).Task.ConfigureAwait(false);
 
                     await client.SendTextAsync(Wrap("welcome", welcome)).ConfigureAwait(false);
@@ -361,6 +407,7 @@ public sealed class RemoteSketchServer : IDisposable
         finally
         {
             _clients.TryRemove(clientId, out _);
+            _library.RevokeClient(clientId);
             NotifyClientCountChanged();
             BroadcastRoster();
             client.Cancel();
@@ -372,20 +419,25 @@ public sealed class RemoteSketchServer : IDisposable
         }
     }
 
-    private async Task<(bool ok, string code, string message, string? deviceKey)> AuthenticateHelloAsync(
+    /// <summary>
+    /// Validates a hello. <c>libraryDeviceId</c> is non-null only for devices allowed to use the capture library
+    /// (paired by QR code, or the PC itself); devices that joined through a session link never get one.
+    /// </summary>
+    private async Task<(bool ok, string code, string message, string? deviceKey, string? libraryDeviceId)> AuthenticateHelloAsync(
         RemoteHello hello,
         string clientId,
         IPAddress? remoteIp)
     {
         if (_pairing.TryConsumePairToken(hello.Pair))
         {
-            return (true, string.Empty, string.Empty, _pairing.IssueDeviceKey(hello.DeviceName));
+            var key = _pairing.IssueDeviceKey(hello.DeviceName, canUseLibrary: true);
+            return (true, string.Empty, string.Empty, key, _pairing.FindByDeviceKey(key)?.Id);
         }
 
         var known = _pairing.FindByDeviceKey(hello.DeviceKey);
         if (known is not null)
         {
-            return (true, string.Empty, string.Empty, null);
+            return (true, string.Empty, string.Empty, null, known.CanUseLibrary ? known.Id : null);
         }
 
         var joinOk = _pairing.TryValidateJoinToken(hello.Join);
@@ -393,10 +445,11 @@ public sealed class RemoteSketchServer : IDisposable
         {
             if (remoteIp is not null && IPAddress.IsLoopback(remoteIp))
             {
-                return (true, string.Empty, string.Empty, _pairing.IssueDeviceKey(hello.DeviceName));
+                var key = _pairing.IssueDeviceKey(hello.DeviceName, canUseLibrary: true);
+                return (true, string.Empty, string.Empty, key, _pairing.FindByDeviceKey(key)?.Id);
             }
 
-            return (false, "badToken", "Invalid join or pair token.", null);
+            return (false, "badToken", "Invalid join or pair token.", null, null);
         }
 
         if (_settings.Current.RemoteRequireJoinApproval)
@@ -404,17 +457,17 @@ public sealed class RemoteSketchServer : IDisposable
             var approver = JoinApprovalRequired;
             if (approver is null)
             {
-                return (false, "approvalRequired", "Host approval is required.", null);
+                return (false, "approvalRequired", "Host approval is required.", null, null);
             }
 
             var approved = await approver(clientId, hello.DeviceName).ConfigureAwait(false);
             if (!approved)
             {
-                return (false, "denied", "Join denied by host.", null);
+                return (false, "denied", "Join denied by host.", null, null);
             }
         }
 
-        return (true, string.Empty, string.Empty, _pairing.IssueDeviceKey(hello.DeviceName));
+        return (true, string.Empty, string.Empty, _pairing.IssueDeviceKey(hello.DeviceName, canUseLibrary: false), null);
     }
 
     private async Task HandleClientMessageAsync(RemoteConnectedClient client, string json)
@@ -459,6 +512,9 @@ public sealed class RemoteSketchServer : IDisposable
             case "setPressure":
                 ApplySetPressure(json);
                 break;
+            case "setVeil":
+                ApplySetVeil(json);
+                break;
             case "undo":
                 await Application.Current.Dispatcher.InvokeAsync(() => _overlay.Undo(client.ClientId)).Task.ConfigureAwait(false);
                 break;
@@ -478,6 +534,59 @@ public sealed class RemoteSketchServer : IDisposable
             case "hover":
                 BroadcastControl(json, client.ClientId);
                 break;
+            case "viewMode":
+                ApplyViewMode(client, json);
+                break;
+            case "capture":
+                await HandleCaptureAsync(client).ConfigureAwait(false);
+                break;
+        }
+    }
+
+    private void ApplyViewMode(RemoteConnectedClient client, string json)
+    {
+        var msg = RemoteJson.Deserialize<RemoteViewMode>(json);
+        if (msg is null)
+        {
+            return;
+        }
+
+        var doc = string.Equals(msg.Mode, "doc", StringComparison.OrdinalIgnoreCase);
+        // Editing a library capture needs no live frames; pausing them saves Wi-Fi and PC CPU.
+        client.DocMode = doc;
+        if (!doc)
+        {
+            _frameStreamer.RequestImmediateFrame();
+        }
+    }
+
+    private async Task HandleCaptureAsync(RemoteConnectedClient client)
+    {
+        var handler = CaptureToLibraryHandler;
+        if (client.LibToken is null || !_settings.Current.RemoteLibraryEnabled || handler is null)
+        {
+            await SendJsonAsync(client, Wrap("captureFailed", new RemoteCaptureFailed("Capture is not available for this device."))).ConfigureAwait(false);
+            return;
+        }
+
+        (string? Id, string? Error) result;
+        try
+        {
+            result = await Application.Current.Dispatcher.InvokeAsync(handler).Task.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            RemoteDebugLog.Write($"WS capture failed clientId={client.ClientId}: {ex.Message}");
+            result = (null, "Capture failed.");
+        }
+
+        if (result.Id is not null)
+        {
+            await SendJsonAsync(client, Wrap("captured", new RemoteCaptured(result.Id))).ConfigureAwait(false);
+        }
+        else
+        {
+            await SendJsonAsync(client, Wrap("captureFailed", new RemoteCaptureFailed(result.Error ?? "Capture failed."))).ConfigureAwait(false);
         }
     }
 
@@ -543,6 +652,23 @@ public sealed class RemoteSketchServer : IDisposable
             _session.PersistSettings();
             BroadcastState();
         });
+    }
+
+    private void ApplySetVeil(string json)
+    {
+        var msg = RemoteJson.Deserialize<RemoteSetVeil>(json);
+        if (msg is null || double.IsNaN(msg.Value))
+        {
+            return;
+        }
+
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            _session.SetScreenVeil(msg.Value);
+            _session.PersistSettings();
+            BroadcastState();
+        });
+        _frameStreamer.RequestImmediateFrame();
     }
 
     private async Task DispatchStrokeBeginAsync(RemoteConnectedClient client, string json)
@@ -758,7 +884,8 @@ public sealed class RemoteSketchServer : IDisposable
             stream.Width,
             stream.Height,
             _settings.Current.RemoteRegionEnabled,
-            _session.PressureSensitive);
+            _session.PressureSensitive,
+            _session.ScreenVeil);
     }
 
     private string PickColor()
@@ -873,6 +1000,7 @@ public sealed class RemoteSketchServer : IDisposable
 
     public void Dispose()
     {
+        _library.Dispose();
         _frameStreamer.Dispose();
         _ = StopAsync();
     }
@@ -904,6 +1032,14 @@ public sealed class RemoteSketchServer : IDisposable
         public string Color { get; set; }
 
         public bool StreamEnabled { get; private set; }
+
+        /// <summary>Capability token for /lib endpoints; null unless this is the paired owner device.</summary>
+        public string? LibToken { get; set; }
+
+        /// <summary>True while the iPad is editing a library capture; live frames are not sent.</summary>
+        public volatile bool DocMode;
+
+        public bool StreamActive => StreamEnabled && !DocMode;
 
         public void EnableStreaming()
         {
@@ -969,7 +1105,7 @@ public sealed class RemoteSketchServer : IDisposable
                 {
                     var sent = false;
 
-                    if (StreamEnabled && _frames.Reader.TryRead(out var frame))
+                    if (StreamActive && _frames.Reader.TryRead(out var frame))
                     {
                         await SendPayloadAsync(frame, WebSocketMessageType.Binary, token).ConfigureAwait(false);
                         framesSent++;
@@ -988,11 +1124,11 @@ public sealed class RemoteSketchServer : IDisposable
                         sent = true;
                     }
 
-                    if (!StreamEnabled)
+                    if (!StreamActive)
                     {
                         while (_frames.Reader.TryRead(out _))
                         {
-                            // Drop frames until the client session is ready for video.
+                            // Drop frames until the client session is ready for video (or is back in live mode).
                         }
                     }
 

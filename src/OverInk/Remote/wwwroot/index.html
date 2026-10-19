@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0f1115" />
   <title>OverInk Remote</title>
-  <link rel="stylesheet" href="styles.css?v=13" />
+  <link rel="stylesheet" href="styles.css?v=17" />
 </head>
 <body>
   <div id="root">
@@ -22,6 +22,41 @@
       <span id="status">Connecting…</span>
     </div>
 
+    <!-- Capture being edited (library mode): name and save state -->
+    <div id="docChip" class="ui chip doc-chip panel-hidden" data-state="ok" role="status">
+      <span id="docChipIcon" class="chip-icon"></span>
+      <span id="docChipText"></span>
+    </div>
+
+    <!-- Save conflict: the capture was changed on the PC while it has unsaved edits here -->
+    <div id="docBanner" class="ui banner panel-hidden" role="alert">
+      <span id="docBannerText">Changed on the PC.</span>
+      <div class="banner-actions">
+        <button type="button" id="docKeepMine" class="banner-btn">Keep mine</button>
+        <button type="button" id="docLoadPc" class="banner-btn primary">Load PC version</button>
+      </div>
+    </div>
+
+    <div id="toast" class="ui toast panel-hidden" role="status">
+      <span id="toastText"></span>
+      <button type="button" id="toastAction" class="toast-btn panel-hidden"></button>
+    </div>
+
+    <!-- Capture library: grid of captures saved on the PC -->
+    <div id="library" class="ui library panel-hidden" aria-label="Capture library">
+      <header class="lib-header">
+        <button type="button" id="libClose" class="lib-hbtn" aria-label="Close library"></button>
+        <h1 class="lib-title">Captures</h1>
+        <span id="libCount" class="lib-count"></span>
+        <button type="button" id="libRefresh" class="lib-hbtn" aria-label="Refresh"></button>
+      </header>
+      <div id="libBody" class="lib-body">
+        <div id="libGrid" class="lib-grid"></div>
+        <p id="libEmpty" class="lib-empty panel-hidden">No captures yet. Tap the camera button to capture the PC screen.</p>
+        <p id="libError" class="lib-empty panel-hidden"></p>
+      </div>
+    </div>
+
     <!-- Snap targets shown while dragging the dock -->
     <div id="snapZones" class="panel-hidden" aria-hidden="true">
       <div class="snap-zone" data-edge="left"></div>
@@ -29,7 +64,7 @@
       <div class="snap-zone" data-edge="right"></div>
     </div>
 
-    <div id="hud" data-edge="bottom">
+    <div id="hud" data-edge="bottom" data-mode="live" data-lib="0">
       <!-- Popovers sit beside the dock; only one is open at a time -->
       <div id="colorPopover" class="ui popover panel-hidden" aria-hidden="true">
         <div class="popover-title">Color</div>
@@ -46,6 +81,15 @@
           <span class="row-label">Pressure sensitivity</span>
           <input type="checkbox" id="pressureToggle" class="switch" checked />
         </label>
+      </div>
+
+      <div id="veilPopover" class="ui popover panel-hidden" aria-hidden="true">
+        <div class="popover-title">Screen veil <span id="veilValue" class="popover-value">Off</span></div>
+        <div class="size-row">
+          <span id="veilIcon" class="size-preview-wrap"></span>
+          <input id="veilSlider" type="range" min="0" max="60" step="5" value="0" aria-label="Screen veil" />
+        </div>
+        <p class="popover-note">Washes the screen toward white, under your ink, so sketches stand out.</p>
       </div>
 
       <div id="settingsPanel" class="ui popover panel-hidden" aria-hidden="true">
@@ -76,12 +120,22 @@
         <div class="group">
           <button type="button" id="colorBtn" class="dock-btn" aria-label="Color" title="Color"><span id="colorDot" class="color-dot"></span></button>
           <button type="button" id="sizeBtn" class="dock-btn" aria-label="Stroke width" title="Stroke width"><svg class="stroke-icon" viewBox="0 0 28 24" width="28" height="24" fill="none" stroke-linecap="round" aria-hidden="true"><path id="sizeDot" d="M5 17C9 5 15 21 23 7" stroke="currentColor" stroke-width="3" /></svg></button>
+          <button type="button" id="veilBtn" class="dock-btn live-only" aria-label="Screen veil" title="Screen veil"></button>
         </div>
         <span class="divider"></span>
         <div class="group">
           <button type="button" id="undoBtn" class="dock-btn" aria-label="Undo" title="Undo"></button>
           <button type="button" id="redoBtn" class="dock-btn" aria-label="Redo" title="Redo"></button>
           <button type="button" id="clearBtn" class="dock-btn danger" aria-label="Clear all" title="Clear all"></button>
+        </div>
+        <span class="divider lib-only live-only"></span>
+        <div class="group lib-only live-only">
+          <button type="button" id="captureBtn" class="dock-btn" aria-label="Capture PC screen" title="Capture PC screen"></button>
+          <button type="button" id="libraryBtn" class="dock-btn" aria-label="Capture library" title="Capture library"></button>
+        </div>
+        <span class="divider doc-only"></span>
+        <div class="group doc-only">
+          <button type="button" id="backBtn" class="dock-btn" aria-label="Back to live screen" title="Back to live screen"></button>
         </div>
         <span class="divider"></span>
         <div class="group">
@@ -90,6 +144,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=24"></script>
+  <script type="module" src="app.js?v=31"></script>
 </body>
 </html>

@@ -13,6 +13,20 @@ public sealed class SketchSession
         PenColor = settings.Current.GetPenColor();
         PenThickness = settings.Current.PenThickness;
         PressureSensitive = settings.Current.PressureSensitive;
+        ScreenVeil = Math.Clamp(settings.Current.ScreenVeilOpacity, 0, MaxScreenVeil);
+    }
+
+    /// <summary>Strongest veil the UI allows: enough to calm the screen, never enough to hide it.</summary>
+    public const double MaxScreenVeil = 0.6;
+
+    /// <summary>White veil laid over the screen (under the ink) while drawing, 0–<see cref="MaxScreenVeil"/>.</summary>
+    public double ScreenVeil { get; private set; }
+
+    public void SetScreenVeil(double opacity)
+    {
+        ScreenVeil = Math.Clamp(Math.Round(opacity, 2), 0, MaxScreenVeil);
+        Settings.Current.ScreenVeilOpacity = ScreenVeil;
+        Notify();
     }
 
     public SettingsService Settings { get; }

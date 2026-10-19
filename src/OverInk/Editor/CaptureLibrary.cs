@@ -68,15 +68,125 @@ public sealed class CaptureLibrary : IDisposable
             .ToList();
     }
 
-    public CaptureItem CreateFromCapture(BitmapSource capture)
+    /// <summary>
+    /// Resolves an id to an item that currently exists in the library. Only ids returned by
+    /// <see cref="Enumerate"/> match, so path-like or unknown ids can never reach the file system.
+    /// </summary>
+    public CaptureItem? TryGet(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        return Enumerate().FirstOrDefault(i => string.Equals(i.Id, id, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Opaque version string that changes whenever the capture's image or ink is written (last write time
+    /// of the newest backing file).
+    /// </summary>
+    public string GetRevision(CaptureItem item)
+    {
+        long ticks = 0;
+
+        void Consider(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    ticks = Math.Max(ticks, File.GetLastWriteTimeUtc(path).Ticks);
+                }
+            }
+            catch
+            {
+                // A file mid-replace; the next change event will correct the revision.
+            }
+        }
+
+        Consider(item.FlattenedPath);
+        if (item.HasEditableSidecars)
+        {
+            Consider(SidecarPath(item.SidecarBaseName!, ".orig.png"));
+            Consider(SidecarPath(item.SidecarBaseName!, ".isf"));
+        }
+
+        return ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Loads just the untouched original image of a capture.</summary>
+    public BitmapSource LoadOriginal(CaptureItem item) => LoadBitmap(OriginalPathFor(item));
+
+    /// <summary>Loads just the saved ink of a capture (empty if it has none).</summary>
+    public StrokeCollection LoadStrokes(CaptureItem item)
+    {
+        var strokesPath = StrokesPathFor(item);
+        if (item.HasEditableSidecars && File.Exists(strokesPath))
+        {
+            using var stream = File.OpenRead(strokesPath);
+            return new StrokeCollection(stream);
+        }
+
+        return new StrokeCollection();
+    }
+
+    /// <summary>
+    /// Gives a plain PNG (one dropped into the folder, no sidecars) editable sidecars: the PNG itself becomes
+    /// the original and the ink starts empty. Returns the item unchanged if it is already editable.
+    /// </summary>
+    public CaptureItem PromoteToEditable(CaptureItem item)
+    {
+        if (item.HasEditableSidecars)
+        {
+            return item;
+        }
+
+        var baseName = item.DisplayName;
+        File.Copy(item.FlattenedPath, SidecarPath(baseName, ".orig.png"), overwrite: true);
+        WriteStrokes(baseName, new StrokeCollection());
+        return new CaptureItem
+        {
+            FlattenedPath = item.FlattenedPath,
+            CreatedAt = item.CreatedAt,
+            SidecarBaseName = baseName
+        };
+    }
+
+    /// <summary>Writes new ink and the re-flattened PNG without touching the original image.</summary>
+    public void SaveEdit(CaptureItem item, StrokeCollection strokes, BitmapSource flattened)
+    {
+        if (!item.HasEditableSidecars)
+        {
+            throw new InvalidOperationException("Capture has no editable sidecars.");
+        }
+
+        SaveBitmap(flattened, item.FlattenedPath);
+        WriteStrokes(item.SidecarBaseName!, strokes);
+    }
+
+    /// <summary>
+    /// Saves a new capture. <paramref name="capture"/> is the clean screen; <paramref name="ink"/> (image-pixel
+    /// coordinates, e.g. what was drawn on the overlay) is stored as editable ink on top of it, and the
+    /// flattened PNG shows both. Must run on the UI thread when ink is given (flattening renders WPF visuals).
+    /// </summary>
+    public CaptureItem CreateFromCapture(BitmapSource capture, StrokeCollection? ink = null)
     {
         var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         var baseName = $"Capture_{stamp}";
         var flattenedPath = Path.Combine(_folder, $"{baseName}.png");
+        for (var suffix = 2; File.Exists(flattenedPath); suffix++)
+        {
+            baseName = $"Capture_{stamp}_{suffix}";
+            flattenedPath = Path.Combine(_folder, $"{baseName}.png");
+        }
 
-        SaveBitmap(capture, flattenedPath);
+        ink ??= new StrokeCollection();
+        var flattened = ink.Count == 0 ? capture : CaptureRenderer.Flatten(capture, ink);
+
+        SaveBitmap(flattened, flattenedPath);
         WriteSidecarOriginal(baseName, capture);
-        WriteStrokes(baseName, new StrokeCollection());
+        WriteStrokes(baseName, ink);
 
         return new CaptureItem
         {

@@ -10,6 +10,12 @@
         Topmost="True"
         Focusable="True">
     <Grid Background="#01000000">
+        <!-- Optional white veil under the ink so sketches stand out; also visible in the remote stream. -->
+        <Rectangle x:Name="ScreenVeil"
+                   Fill="White"
+                   Opacity="0"
+                   IsHitTestVisible="False"
+                   Visibility="Collapsed" />
         <InkCanvas x:Name="InkSurface"
                    Background="Transparent"
                    EditingMode="Ink"

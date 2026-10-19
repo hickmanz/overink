@@ -48,6 +48,8 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 
 [Icons]
 Name: "{autoprograms}\OverInk"; Filename: "{app}\OverInk.exe"
+; Opens (or brings forward) the capture editor; if OverInk is already running it just signals that copy.
+Name: "{autoprograms}\OverInk Editor"; Filename: "{app}\OverInk.exe"; Parameters: "--editor"; Comment: "Open the OverInk capture editor"
 Name: "{autodesktop}\OverInk"; Filename: "{app}\OverInk.exe"; Tasks: desktopicon
 
 [Run]

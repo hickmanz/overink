@@ -1,5 +1,7 @@
 using System.Windows;
+using System.Windows.Ink;
 using System.Windows.Interop;
+using System.Windows.Media;
 using H.NotifyIcon;
 using OverInk.Editor;
 using OverInk.Input;
@@ -41,13 +43,20 @@ public sealed class ApplicationHost : IDisposable
         _pairing = new PairingService(_settings);
         _overlay = new OverlayWindow(_session, _strokeSource);
         _toolbar = new ToolbarWindow(_session, _overlay);
+        // Make the toolbar an owned window of the overlay: Windows keeps an owned window above its owner
+        // in the Z-order no matter which one is active, so the screen veil can never cover the toolbar.
+        new WindowInteropHelper(_toolbar).Owner = new WindowInteropHelper(_overlay).EnsureHandle();
         _overlay.SetToolbarWindow(_toolbar);
         _toolbar.PairingRequested += async (_, _) => await ShowPairingWindowAsync();
-        _remoteServer = new RemoteSketchServer(_settings, _pairing, _strokeSource, _session, _overlay);
+        _remoteServer = new RemoteSketchServer(_settings, _pairing, _strokeSource, _session, _overlay, _captureLibrary);
+        _remoteServer.CaptureToLibraryHandler = CaptureForRemote;
         _remoteServer.ClientCountChanged += count =>
         {
             Application.Current.Dispatcher.BeginInvoke(() =>
-                _toolbar.SetRemoteConnected(count > 0, count));
+            {
+                _toolbar.SetRemoteConnected(count > 0, count);
+                _overlay.SetRemoteActive(count > 0);
+            });
         };
         _remoteServer.JoinApprovalRequired += OnJoinApprovalRequiredAsync;
 
@@ -64,6 +73,7 @@ public sealed class ApplicationHost : IDisposable
         _toolbar.CaptureRequested += (_, e) => CaptureToEditor(e.Kind);
         _toolbar.SetRegionRequested += (_, _) => OnSetRegionToolbarClick();
         _toolbar.HideRequested += (_, _) => SetVisible(false);
+        _toolbar.OpenEditorRequested += (_, _) => ShowEditor();
         _toolbar.HotkeyChanged += (_, args) => ApplyHotkey(args.Modifiers, args.VirtualKey);
         _toolbar.RemoteServerEnabledChanged += async (_, enabled) => await SetRemoteServerAsync(enabled);
         _toolbar.HideToolbarWhenNotDrawingChanged += (_, enabled) =>
@@ -146,9 +156,16 @@ public sealed class ApplicationHost : IDisposable
         captureItem.Click += (_, _) => CaptureToEditor();
         tray.ContextMenu.Items.Add(captureItem);
 
-        var libraryItem = new System.Windows.Controls.MenuItem { Header = "Open capture library…" };
-        libraryItem.Click += (_, _) => OpenEditorLibrary();
+        var libraryItem = new System.Windows.Controls.MenuItem
+        {
+            Header = "Open editor…",
+            FontWeight = FontWeights.SemiBold
+        };
+        libraryItem.Click += (_, _) => ShowEditor();
         tray.ContextMenu.Items.Add(libraryItem);
+
+        // Double-clicking the tray icon is the quickest way in.
+        tray.TrayMouseDoubleClick += (_, _) => ShowEditor();
 
         tray.ContextMenu.Items.Add(new System.Windows.Controls.Separator());
 
@@ -283,16 +300,91 @@ public sealed class ApplicationHost : IDisposable
 
     private void CaptureToEditor(CaptureRequestKind kind = CaptureRequestKind.Default)
     {
+        var item = CaptureToLibrary(kind);
+        if (item is not null)
+        {
+            OpenEditor(item);
+        }
+    }
+
+    /// <summary>Captures the screen into the library without opening the editor. Null when cancelled.</summary>
+    private CaptureItem? CaptureToLibrary(CaptureRequestKind kind)
+    {
         var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
         if (!TryResolveCapturePixels(kind, geometry, out var pixelBounds))
         {
-            return;
+            return null;
         }
 
-        var bitmap = ScreenCaptureService.Capture(pixelBounds, CollectWindowsHiddenDuringCapture());
+        var (bitmap, ink) = CaptureScreenWithInk(pixelBounds, geometry);
+        return _captureLibrary.CreateFromCapture(bitmap, ink);
+    }
 
-        var item = _captureLibrary.CreateFromCapture(bitmap);
-        OpenEditor(item);
+    /// <summary>
+    /// Grabs the clean screen (overlay ink hidden for the instant of the grab) together with whatever is drawn
+    /// on the overlay, as strokes in image-pixel coordinates. The capture keeps that ink editable.
+    /// </summary>
+    private (BitmapSource Bitmap, StrokeCollection Ink) CaptureScreenWithInk(Rect pixelBounds, MonitorGeometry geometry)
+    {
+        // A hidden overlay shows no ink on screen, so none belongs in the capture either.
+        var includeInk = _overlay.IsVisible;
+        BitmapSource bitmap;
+        using (includeInk ? _overlay.HideInkForCapture() : null)
+        {
+            bitmap = ScreenCaptureService.Capture(pixelBounds, CollectWindowsHiddenDuringCapture());
+        }
+
+        if (!includeInk)
+        {
+            return (bitmap, new StrokeCollection());
+        }
+
+        var scaleX = geometry.Dips.Width > 0 ? geometry.Pixels.Width / geometry.Dips.Width : 1;
+        var scaleY = geometry.Dips.Height > 0 ? geometry.Pixels.Height / geometry.Dips.Height : 1;
+        var toImage = new Matrix(scaleX, 0, 0, scaleY, geometry.Pixels.X - pixelBounds.X, geometry.Pixels.Y - pixelBounds.Y);
+        var all = _overlay.ExportInk(toImage);
+
+        // Drop strokes entirely outside a region capture.
+        var imageRect = new Rect(0, 0, bitmap.PixelWidth, bitmap.PixelHeight);
+        var visible = new StrokeCollection();
+        foreach (var stroke in all)
+        {
+            if (stroke.GetBounds().IntersectsWith(imageRect))
+            {
+                visible.Add(stroke);
+            }
+        }
+
+        return (bitmap, visible);
+    }
+
+    /// <summary>
+    /// Capture requested from the iPad. Never opens the region picker or the PC editor, and refuses to save
+    /// a black frame (locked session, display off, UAC prompt).
+    /// </summary>
+    private (string? Id, string? Error) CaptureForRemote()
+    {
+        try
+        {
+            var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
+            if (!TryResolveCapturePixels(CaptureRequestKind.Default, geometry, out var pixelBounds))
+            {
+                return (null, "Capture was cancelled.");
+            }
+
+            var (bitmap, ink) = CaptureScreenWithInk(pixelBounds, geometry);
+            if (ScreenCaptureService.IsBlank(bitmap))
+            {
+                return (null, "Capture failed: the PC screen is blank or locked.");
+            }
+
+            return (_captureLibrary.CreateFromCapture(bitmap, ink).Id, null);
+        }
+        catch (Exception ex)
+        {
+            RemoteDebugLog.Write($"remote capture failed: {ex.Message}");
+            return (null, "Capture failed: the PC screen could not be read.");
+        }
     }
 
     private bool TryResolveCapturePixels(CaptureRequestKind kind, MonitorGeometry geometry, out Rect pixelBounds)
@@ -348,34 +440,69 @@ public sealed class ApplicationHost : IDisposable
         }
     }
 
-    private void OpenEditorLibrary()
+    /// <summary>
+    /// Opens the editor from the toolbar, tray icon or Start menu. An already-open editor is just brought
+    /// to the front (keeping the capture you were on); otherwise the newest capture is opened, or an empty
+    /// editor when the library has no captures yet.
+    /// </summary>
+    public void ShowEditor()
     {
-        var items = _captureLibrary.Enumerate();
-        if (items.Count == 0)
+        // The overlay swallows mouse input while drawing, which would leave the editor unusable.
+        if (_session.Mode == InteractionMode.Draw)
         {
-            MessageBox.Show(
-                $"No captures yet. Saved images appear in:\n{_captureLibrary.FolderPath}",
-                "OverInk",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
+            _session.SetMode(InteractionMode.PassThrough);
+            _session.PersistSettings();
         }
 
-        OpenEditor(items[0]);
+        var existing = _editor is not null;
+        var editor = EnsureEditor();
+        if (!existing && _captureLibrary.Enumerate().FirstOrDefault() is { } newest)
+        {
+            editor.OpenItem(newest);
+        }
+
+        BringEditorToFront(editor);
     }
 
+    private void OpenEditorLibrary() => ShowEditor();
+
     private void OpenEditor(CaptureItem item)
+    {
+        var editor = EnsureEditor();
+        editor.OpenItem(item);
+        BringEditorToFront(editor);
+    }
+
+    private EditorWindow EnsureEditor()
     {
         if (_editor is null)
         {
             _editor = new EditorWindow(_captureLibrary, _session.PenColor, _session.PenThickness);
-            _editor.Closed += (_, _) => _editor = null;
+            // The screen veil sits on a topmost overlay, so it would wash out the editor; hide it while open.
+            _overlay.SetEditorOpen(true);
+            _editor.Closed += (_, _) =>
+            {
+                _editor = null;
+                _overlay.SetEditorOpen(false);
+            };
         }
 
-        _editor.OpenItem(item);
-        _editor.Show();
-        _editor.Activate();
+        return _editor;
     }
+
+    private static void BringEditorToFront(EditorWindow editor)
+    {
+        editor.Show();
+        if (editor.WindowState == WindowState.Minimized)
+        {
+            editor.WindowState = WindowState.Normal;
+        }
+
+        editor.Activate();
+    }
+
+    /// <summary>Reveals the toolbar and overlay (used by the tray menu and when OverInk is launched again).</summary>
+    public void ShowToolbar() => ShowToolbarFromTray();
 
     private void ShowToolbarFromTray()
     {

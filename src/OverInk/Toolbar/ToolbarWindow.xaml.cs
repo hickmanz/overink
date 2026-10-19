@@ -24,6 +24,7 @@ public partial class ToolbarWindow : Window
 
     public event EventHandler<CaptureRequestedEventArgs>? CaptureRequested;
     public event EventHandler? HideRequested;
+    public event EventHandler? OpenEditorRequested;
     public event EventHandler? BoundsChanged;
     public event EventHandler? PairingRequested;
     public event EventHandler<bool>? RemoteServerEnabledChanged;
@@ -66,6 +67,11 @@ public partial class ToolbarWindow : Window
         SizeChanged += (_, _) => BoundsChanged?.Invoke(this, EventArgs.Empty);
         Loaded += (_, _) =>
         {
+            // A vertical layout restored at startup can leave the window wider than its content
+            // (stale first-show size); re-arming SizeToContent snaps it back to the content size.
+            SizeToContent = SizeToContent.Manual;
+            SizeToContent = SizeToContent.WidthAndHeight;
+            UpdateLayout();
             ClampToVisibleScreen();
             BoundsChanged?.Invoke(this, EventArgs.Empty);
             var handle = new WindowInteropHelper(this).Handle;
@@ -173,6 +179,35 @@ public partial class ToolbarWindow : Window
         UpdateToolButtons();
         UpdateColorSwatches();
         UpdateStrokeVisuals();
+        UpdateVeilVisuals();
+    }
+
+    private void UpdateVeilVisuals()
+    {
+        if (VeilSlider is null || VeilValue is null)
+        {
+            return;
+        }
+
+        var percent = Math.Round(_session.ScreenVeil * 100);
+        if (Math.Abs(VeilSlider.Value - percent) > 0.01)
+        {
+            VeilSlider.Value = percent;
+        }
+
+        VeilValue.Text = percent <= 0 ? "Off" : $"{(int)percent}%";
+        VeilButton.ToolTip = percent <= 0 ? "Screen veil (off)" : $"Screen veil ({(int)percent}%)";
+    }
+
+    private void VeilSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        _session.SetScreenVeil(e.NewValue / 100.0);
+        _session.PersistSettings();
     }
 
     /// <summary>
@@ -327,6 +362,7 @@ public partial class ToolbarWindow : Window
         // Capture: camera-only button stacked over the chevron.
         CaptureLabel.Visibility = vertical ? Visibility.Collapsed : Visibility.Visible;
         CaptureSplit.Margin = vertical ? new Thickness(1, 4, 1, 1) : new Thickness(4, 0, 0, 0);
+        EditorButton.Margin = vertical ? new Thickness(1, 5, 1, 1) : new Thickness(5, 1, 1, 1);
         CaptureMainButton.MinWidth = vertical ? 34 : 68;
         CaptureMainButton.Padding = vertical ? new Thickness(0) : new Thickness(12, 0, 12, 0);
         CaptureMenuButton.MinWidth = vertical ? 34 : 28;
@@ -383,6 +419,7 @@ public partial class ToolbarWindow : Window
 
         ColorPickerPopup.Placement = placement;
         StrokePopup.Placement = placement;
+        VeilPopup.Placement = placement;
     }
 
     private void DragBar_MouseDown(object sender, MouseButtonEventArgs e)
@@ -585,6 +622,8 @@ public partial class ToolbarWindow : Window
             ? "Region on — click to turn off (full-screen remote stream)"
             : "Click to drag a capture region for remote clients";
     }
+
+    private void OpenEditor_Click(object sender, RoutedEventArgs e) => OpenEditorRequested?.Invoke(this, EventArgs.Empty);
 
     private void Hide_Click(object sender, RoutedEventArgs e) => HideRequested?.Invoke(this, EventArgs.Empty);
 

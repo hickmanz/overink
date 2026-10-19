@@ -27,6 +27,8 @@ public partial class EditorWindow : Window
     private readonly List<CaptureTrayEntry> _trayEntries = new();
 
     private CaptureItem? _currentItem;
+    /// <summary>Library revision of the current capture as last loaded or saved here; detects edits made elsewhere (iPad).</summary>
+    private string? _loadedRevision;
     private BitmapSource _originalSource = null!;
     private bool _isDirty;
     private bool _loadingDocument;
@@ -87,7 +89,45 @@ public partial class EditorWindow : Window
 
     private void OnLibraryChanged()
     {
-        Dispatcher.BeginInvoke(() => RefreshTray(keepSelection: true));
+        Dispatcher.BeginInvoke(() =>
+        {
+            RefreshTray(keepSelection: true);
+            ReloadIfChangedExternally();
+        });
+    }
+
+    /// <summary>
+    /// The open capture may have been saved by another client (the iPad). Reload it silently when we have
+    /// no unsaved edits; otherwise warn that our next save will overwrite theirs.
+    /// </summary>
+    private void ReloadIfChangedExternally()
+    {
+        if (_currentItem is null || _loadingDocument)
+        {
+            return;
+        }
+
+        if (!File.Exists(_currentItem.FlattenedPath))
+        {
+            return;
+        }
+
+        var revision = _library.GetRevision(_currentItem);
+        if (revision == _loadedRevision)
+        {
+            return;
+        }
+
+        if (_isDirty)
+        {
+            ShowStatus("Changed on iPad - saving here will overwrite it");
+            return;
+        }
+
+        var item = _currentItem;
+        LoadItem(item);
+        SelectItemInTray(item);
+        ShowStatus("Updated from iPad");
     }
 
     private void RefreshTray(bool keepSelection)
@@ -135,6 +175,7 @@ public partial class EditorWindow : Window
         _loadingDocument = true;
         var (original, strokes) = _library.LoadDocument(item);
         _currentItem = item;
+        _loadedRevision = _library.GetRevision(item);
         _originalSource = original;
         BackgroundImage.Source = original;
         InkSurface.Strokes.Clear();
@@ -428,6 +469,7 @@ public partial class EditorWindow : Window
 
         var flattened = RenderFlattened();
         _library.SaveDocument(_currentItem, _originalSource, InkSurface.Strokes, flattened);
+        _loadedRevision = _library.GetRevision(_currentItem);
         _isDirty = false;
 
         var entry = _trayEntries.FirstOrDefault(e =>
@@ -440,23 +482,8 @@ public partial class EditorWindow : Window
         }
     }
 
-    private BitmapSource RenderFlattened()
-    {
-        var width = (int)CanvasHost.Width;
-        var height = (int)CanvasHost.Height;
-        var visual = new DrawingVisual();
-        using (var dc = visual.RenderOpen())
-        {
-            dc.DrawImage(_originalSource, new Rect(0, 0, width, height));
-            var brush = new VisualBrush(InkSurface) { Stretch = Stretch.None };
-            dc.DrawRectangle(brush, null, new Rect(0, 0, width, height));
-        }
-
-        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(visual);
-        bitmap.Freeze();
-        return bitmap;
-    }
+    private BitmapSource RenderFlattened() =>
+        CaptureRenderer.Flatten(_originalSource, InkSurface.Strokes);
 
     private void UpdateZoom()
     {
