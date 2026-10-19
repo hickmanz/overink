@@ -1,0 +1,13 @@
+bin/
+obj/
+.build-check/
+.vs/
+*.user
+*.suo
+*.cache
+*.log
+TestResults/
+.idea/
+*.DotSettings.user
+appsettings.local.json
+.cursor/

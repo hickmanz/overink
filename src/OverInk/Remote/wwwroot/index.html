@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+  <meta charset="utf-8" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+
+  <title>OverInk Remote</title>
+
+  <link rel="stylesheet" href="styles.css?v=10" />
+
+</head>
+
+<body>
+
+  <div id="root">
+
+    <canvas id="frame"></canvas>
+
+    <canvas id="peerInk"></canvas>
+
+    <canvas id="localInk"></canvas>
+
+    <div id="inputSurface" tabindex="0" aria-label="Drawing surface"></div>
+
+    <div id="status">Connecting…</div>
+
+    <div id="hud">
+
+      <div id="settingsPanel" class="panel-hidden" aria-hidden="true">
+
+        <div class="settings-title">Settings</div>
+
+        <label class="settings-row">
+
+          <input type="checkbox" id="debugLogToggle" />
+
+          <span>Connection log</span>
+
+        </label>
+
+        <button type="button" id="resetViewBtn" class="tool-btn settings-action">Reset view</button>
+
+        <p class="settings-hint">Pencil draws · one finger pans · two fingers pinch &amp; rotate</p>
+
+      </div>
+
+      <pre id="log" class="panel-hidden" aria-label="Connection log"></pre>
+
+      <div id="toolbarRow">
+
+        <div id="tools"></div>
+
+        <button type="button" id="settingsBtn" class="tool-btn settings-gear" title="Settings">⚙</button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <script type="module" src="app.js?v=14"></script>
+
+</body>
+
+</html>
+
+
