@@ -1602,8 +1602,12 @@ function pointerDown(e) {
     closePopover();
     return;
   }
-  if (drawPointerId !== null || stylusDrawTouchId !== null) return;
   if (!canDrawPointer(e)) return;
+  if (drawPointerId !== null || stylusDrawTouchId !== null) {
+    // There is only one Pencil: a new pen-down means the previous stroke's lift event never arrived.
+    if (e.pointerType !== 'pen') return;
+    finishStaleStroke(`pen down while pointer ${drawPointerId} / stylus touch ${stylusDrawTouchId} still active`);
+  }
   if (touchGesture && e.pointerType !== 'pen') return;
 
   e.preventDefault();
@@ -1626,12 +1630,19 @@ function onPointerDownCapture(e) {
   if (debugLog) log(`pen hit ${e.target.id || e.target.nodeName}`);
   if (isUiTarget(e.target)) return;
   if (!isDrawAreaTarget(e.target)) return;
-  if (drawPointerId !== null || stylusDrawTouchId !== null) {
-    if (debugLog) log(`pen down ignored: previous stroke still active (pointer ${drawPointerId}, stylus touch ${stylusDrawTouchId})`);
-    return;
-  }
+  if (debugLog) log(`pen pointerdown id=${e.pointerId} t=${Math.round(e.timeStamp)}`);
   pointerDown(e);
   e.stopImmediatePropagation();
+}
+
+/** Ends whatever stroke is still marked active, so a lost pointerup/touchend can't block the next stroke. */
+function finishStaleStroke(reason) {
+  if (debugLog) log(`stale stroke finished: ${reason}`);
+  drawPointerId = null;
+  stylusDrawTouchId = null;
+  drawPointerErasing = false;
+  disarmWindowPointer();
+  endDraw();
 }
 
 function pointerMove(e) {
@@ -1642,6 +1653,7 @@ function pointerMove(e) {
 }
 
 function pointerUp(e) {
+  if (debugLog && e.pointerType === 'pen') log(`pen ${e.type} id=${e.pointerId} t=${Math.round(e.timeStamp)}`);
   if (drawPointerId !== null && e.pointerId !== drawPointerId) return;
   drawPointerId = null;
   drawPointerErasing = false;
@@ -1731,13 +1743,17 @@ function startStylusDraw(touch, e) {
     return;
   }
   if (isUiTarget(e.target)) return;
+  // Always claim the Pencil's touch, even when the pointer path owns the stroke. Left unclaimed, iPadOS
+  // Scribble can swallow a Pencil-down that follows a lift quickly.
+  e.preventDefault();
   if (drawPointerId !== null) return;
   if (openPopover) {
     closePopover();
-    e.preventDefault();
     return;
   }
-  e.preventDefault();
+  if (stylusDrawTouchId !== null) {
+    finishStaleStroke(`stylus touch ${stylusDrawTouchId} still active at new touchstart`);
+  }
   touchGesture = null;
   stylusDrawTouchId = touch.identifier;
   try {
@@ -1750,7 +1766,18 @@ function startStylusDraw(touch, e) {
 
 function onTouchStart(e) {
   if (isUiTarget(e.target)) return;
+  if (debugLog) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (isStylusTouch(e.changedTouches[i])) log(`stylus touchstart t=${Math.round(e.timeStamp)} touches=${e.touches.length}`);
+    }
+  }
   if (e.touches.length === 2) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (isStylusTouch(e.changedTouches[i])) {
+        e.preventDefault();
+        break;
+      }
+    }
     const ang = touchAngle(e.touches);
     touchGesture = {
       kind: 'pinch',
@@ -1780,6 +1807,15 @@ function onTouchStart(e) {
 }
 
 function onTouchMove(e) {
+  // Claim Pencil movement even when the pointer path is drawing it (see startStylusDraw).
+  if (!isUiTarget(e.target)) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (isStylusTouch(e.changedTouches[i])) {
+        e.preventDefault();
+        break;
+      }
+    }
+  }
   if (stylusDrawTouchId !== null) {
     for (let i = 0; i < e.touches.length; i++) {
       const t = e.touches[i];
@@ -1834,6 +1870,11 @@ function onTouchMove(e) {
 }
 
 function onTouchEnd(e) {
+  if (debugLog) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (isStylusTouch(e.changedTouches[i])) log(`stylus ${e.type} t=${Math.round(e.timeStamp)}`);
+    }
+  }
   if (stylusDrawTouchId !== null) {
     let stylusStillDown = false;
     for (let i = 0; i < e.touches.length; i++) {
