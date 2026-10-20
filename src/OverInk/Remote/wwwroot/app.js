@@ -1,4 +1,4 @@
-import { icon } from './icons.js?v=4';
+import { icon } from './icons.js?v=5';
 import { createLibraryApi, renderLibraryGrid, LibraryError } from './library.js?v=3';
 
 const params = new URLSearchParams(location.search);
@@ -30,6 +30,7 @@ let frameLogCount = 0;
 const frameCanvas = document.getElementById('frame');
 const peerCanvas = document.getElementById('peerInk');
 const localCanvas = document.getElementById('localInk');
+const rulerCanvas = document.getElementById('rulerInk');
 const inputSurface = document.getElementById('inputSurface');
 const statusEl = document.getElementById('status');
 const statusChip = document.getElementById('statusChip');
@@ -37,6 +38,7 @@ const statusIconEl = document.getElementById('statusIcon');
 const logEl = document.getElementById('log');
 const toolBtn = document.getElementById('toolBtn');
 const eraserBtn = document.getElementById('eraserBtn');
+const rulerBtn = document.getElementById('rulerBtn');
 const toolPopover = document.getElementById('toolPopover');
 const toolOptionsEl = document.getElementById('toolOptions');
 const settingsPanel = document.getElementById('settingsPanel');
@@ -124,6 +126,7 @@ const ctxOpts = { desynchronized: true };
 const fctx = frameCanvas.getContext('2d', ctxOpts) || frameCanvas.getContext('2d');
 const pctx = peerCanvas.getContext('2d', ctxOpts) || peerCanvas.getContext('2d');
 const lctx = localCanvas.getContext('2d', ctxOpts) || localCanvas.getContext('2d');
+const rctx = rulerCanvas.getContext('2d', ctxOpts) || rulerCanvas.getContext('2d');
 
 let ws;
 let clientId = '';
@@ -165,6 +168,31 @@ loadPen();
 let pressureSensitive = true;
 
 const view = { scale: 1, tx: 0, ty: 0, rotation: 0 };
+
+/*
+ * Ruler: a local-only drawing aid (never sent to the PC). It lives in page space (the space `view` maps to the
+ * screen), so it pans, zooms and rotates with the page. Pen strokes that start beside one of its long edges are
+ * projected onto that edge, so the points that go to the PC are already straight.
+ */
+/** Ruler thickness in screen px: it stays this wide at every zoom level (see rulerHalfWidth). */
+const RULER_WIDTH = 128;
+/** Far longer than any screen at any zoom, so both ends are always off-screen: it reads as an endless straight edge. */
+const RULER_LENGTH = 100000;
+/** How far (screen px) the dark grey edge reaches outside each side of the ruler, fading out as it goes. */
+const RULER_EDGE_SHADE_PX = 7;
+/** Pen-down within this many screen px of an edge locks the stroke to it. */
+const RULER_SNAP_PX = 48;
+/** Both fingers must land within this many screen px of the ruler body to move it (otherwise they move the page). */
+const RULER_GRAB_PX = 36;
+/** Rotation lightly sticks to multiples of 45 degrees (relative to the image), only within 3 degrees of one. */
+const RULER_ANGLE_STEP = Math.PI / 4;
+const RULER_ANGLE_TOLERANCE = (3 * Math.PI) / 180;
+/** The angle readout stays up this long after the fingers lift, then fades. */
+const RULER_ANGLE_LINGER_MS = 1000;
+const ruler = { on: false, placed: false, cx: 0, cy: 0, angle: 0, rawAngle: 0, len: RULER_LENGTH };
+/** Which edge (+1 / -1) the stroke being drawn is locked to; 0 = free. */
+let rulerLockSide = 0;
+
 // Zoom/rotate preview state (see viewChanged). Declared early: redraw() runs during start-up.
 const VIEW_SETTLE_MS = 160;
 const renderedView = { scale: 1, tx: 0, ty: 0, rotation: 0 };
@@ -360,7 +388,7 @@ function initSettingsUi() {
 
 function resize() {
   const dpr = devicePixelRatio || 1;
-  for (const c of [frameCanvas, peerCanvas, localCanvas]) {
+  for (const c of [frameCanvas, peerCanvas, rulerCanvas, localCanvas]) {
     c.width = innerWidth * dpr;
     c.height = innerHeight * dpr;
   }
@@ -771,6 +799,175 @@ function normFromClient(x, y) {
   return [Math.max(0, Math.min(1, nx)), Math.max(0, Math.min(1, ny))];
 }
 
+/** Puts the ruler in the middle of the screen, level with the image, the first time it is switched on. */
+function rulerPlace() {
+  const [cx, cy] = clientToInnerView(innerWidth / 2, innerHeight / 2);
+  ruler.cx = cx;
+  ruler.cy = cy;
+  ruler.angle = ruler.rawAngle = 0;
+  ruler.placed = true;
+}
+
+function setRulerOn(on) {
+  ruler.on = on;
+  if (on && !ruler.placed) rulerPlace();
+  if (!on) hideRulerAngle(true);
+  updateUi();
+  redrawRuler();
+}
+
+/** Half the ruler's thickness in page units. Constant on screen, so it shrinks/grows in page space as you zoom. */
+function rulerHalfWidth() {
+  return RULER_WIDTH / 2 / view.scale;
+}
+
+/** The ruler's angle relative to the image (not the iPad), like a protractor: 0 = level, counter-clockwise up to 179. */
+function rulerDisplayAngle() {
+  const deg = -ruler.angle * 180 / Math.PI;
+  return ((Math.round(deg) % 180) + 180) % 180;
+}
+
+let rulerAngleHideTimer = 0;
+const rulerAngleEl = document.getElementById('rulerAngle');
+
+/** Shows the angle readout and keeps it up while the ruler is being moved. */
+function showRulerAngle() {
+  clearTimeout(rulerAngleHideTimer);
+  rulerAngleHideTimer = 0;
+  const text = `${rulerDisplayAngle()}°`;
+  if (rulerAngleEl.textContent !== text) rulerAngleEl.textContent = text;
+  rulerAngleEl.classList.add('show');
+}
+
+/** Fades the readout away: a second after the fingers lift, or straight away. */
+function hideRulerAngle(immediately = false) {
+  clearTimeout(rulerAngleHideTimer);
+  const fade = () => {
+    rulerAngleHideTimer = 0;
+    rulerAngleEl.classList.remove('show');
+  };
+  if (immediately) fade();
+  else rulerAngleHideTimer = setTimeout(fade, RULER_ANGLE_LINGER_MS);
+}
+
+/** Page point -> ruler space (u along the ruler, v across it, origin at its center). */
+function rulerLocal(ix, iy) {
+  const dx = ix - ruler.cx;
+  const dy = iy - ruler.cy;
+  const c = Math.cos(ruler.angle);
+  const s = Math.sin(ruler.angle);
+  return [dx * c + dy * s, -dx * s + dy * c];
+}
+
+function rulerWorld(u, v) {
+  const c = Math.cos(ruler.angle);
+  const s = Math.sin(ruler.angle);
+  return [ruler.cx + u * c - v * s, ruler.cy + u * s + v * c];
+}
+
+/** True if the touch/pointer is on the ruler body (with a finger-sized margin). */
+function rulerHit(clientX, clientY) {
+  const [ix, iy] = clientToInnerView(clientX, clientY);
+  const [u, v] = rulerLocal(ix, iy);
+  const grab = RULER_GRAB_PX / view.scale;
+  return Math.abs(u) <= ruler.len / 2 + grab && Math.abs(v) <= rulerHalfWidth() + grab;
+}
+
+/** Which long edge (+1 / -1) a pen-down is close enough to lock onto, or 0 for free drawing. */
+function rulerEdgeSide(clientX, clientY) {
+  if (!ruler.on) return 0;
+  const [ix, iy] = clientToInnerView(clientX, clientY);
+  const [u, v] = rulerLocal(ix, iy);
+  const snap = RULER_SNAP_PX / view.scale;
+  if (Math.abs(u) > ruler.len / 2 + snap) return 0;
+  if (Math.abs(Math.abs(v) - rulerHalfWidth()) > snap) return 0;
+  return v < 0 ? -1 : 1;
+}
+
+/** Normalized point on the locked ruler edge nearest the pen (clamped to the ruler's length and the page). */
+function rulerSnapNorm(clientX, clientY, side) {
+  const [ix, iy] = clientToInnerView(clientX, clientY);
+  const [u] = rulerLocal(ix, iy);
+  const half = ruler.len / 2;
+  const [px, py] = rulerWorld(Math.max(-half, Math.min(half, u)), side * rulerHalfWidth());
+  updateContentRect();
+  return [
+    Math.max(0, Math.min(1, (px - contentRect.x) / contentRect.w)),
+    Math.max(0, Math.min(1, (py - contentRect.y) / contentRect.h))
+  ];
+}
+
+/** Sets the displayed angle from the raw one, sticking to 45-degree steps only when very close to one. */
+function rulerApplyAngleSnap() {
+  const nearest = Math.round(ruler.rawAngle / RULER_ANGLE_STEP) * RULER_ANGLE_STEP;
+  ruler.angle = Math.abs(ruler.rawAngle - nearest) <= RULER_ANGLE_TOLERANCE ? nearest : ruler.rawAngle;
+}
+
+/** Repaints the ruler layer from the live view and ruler state. Cheap: two rects and a few lines. */
+function redrawRuler() {
+  const dpr = devicePixelRatio || 1;
+  rctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  rctx.clearRect(0, 0, innerWidth, innerHeight);
+  drawRuler(rctx);
+}
+
+let rulerRedrawQueued = false;
+/** Moving the ruler only repaints its own layer, once per animation frame. */
+function scheduleRulerRedraw() {
+  if (rulerRedrawQueued) return;
+  rulerRedrawQueued = true;
+  requestAnimationFrame(() => {
+    rulerRedrawQueued = false;
+    redrawRuler();
+  });
+}
+
+/** A clear sheet of plastic lying on the screen: barely-there tint, a crisp light-grey rim, and a blurred dark edge. */
+function drawRuler(ctx) {
+  if (!ruler.on) return;
+  const hl = ruler.len / 2;
+  const hw = rulerHalfWidth();
+  const px = 1 / view.scale; // one screen pixel, in page units
+  ctx.save();
+  applyViewTransform(ctx);
+  ctx.translate(ruler.cx, ruler.cy);
+  ctx.rotate(ruler.angle);
+
+  // Body: a faint frosted tint that gathers a little at both edges, like light catching the plastic.
+  const body = ctx.createLinearGradient(0, -hw, 0, hw);
+  body.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
+  body.addColorStop(0.14, 'rgba(255, 255, 255, 0.15)');
+  body.addColorStop(0.86, 'rgba(255, 255, 255, 0.15)');
+  body.addColorStop(1, 'rgba(255, 255, 255, 0.3)');
+  ctx.fillStyle = body;
+  ctx.fillRect(-hl, -hw, ruler.len, hw * 2);
+
+  // Dark grey edge just outside each side of the sheet, feathered outward so it is blurred. A gradient band is
+  // far cheaper than canvas blur, which matters because this layer is repainted on every frame of a gesture.
+  const shade = RULER_EDGE_SHADE_PX * px;
+  for (const side of [-1, 1]) {
+    const edge = side * hw;
+    const shadow = ctx.createLinearGradient(0, edge, 0, edge + side * shade);
+    shadow.addColorStop(0, 'rgba(0, 0, 0, 0.24)');
+    shadow.addColorStop(0.3, 'rgba(0, 0, 0, 0.2)');
+    shadow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = shadow;
+    ctx.fillRect(-hl, side > 0 ? edge : edge - shade, ruler.len, shade);
+  }
+
+  // Crisp light rim along each edge of the sheet (a light grey, not pure white).
+  ctx.beginPath();
+  ctx.moveTo(-hl, -hw);
+  ctx.lineTo(hl, -hw);
+  ctx.moveTo(-hl, hw);
+  ctx.lineTo(hl, hw);
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = 'rgba(222, 222, 222, 0.88)';
+  ctx.lineWidth = 1.25 * px;
+  ctx.stroke();
+  ctx.restore();
+}
+
 function canvasFromNorm(nx, ny) {
   updateContentRect();
   return [
@@ -837,6 +1034,8 @@ function applyViewPreview() {
   const css = `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`;
   for (const canvas of [frameCanvas, peerCanvas, localCanvas]) canvas.style.transform = css;
   viewPreviewActive = true;
+  // The ruler is not transformed like the rest: it is cheap to repaint, so it follows the live view exactly.
+  redrawRuler();
 }
 
 function clearViewPreview() {
@@ -929,6 +1128,7 @@ function redraw() {
   for (const shape of localShapes.values()) drawShape(lctx, shape);
   if (docMode) paintCommittedLayer();
   else drawStrokeMap(lctx, vectorInk);
+  redrawRuler();
   drawStrokeMap(lctx, activeLocal);
   if (shapeDrag) drawShape(lctx, { ...shapeDrag, tool, color, size });
   drawEraserCursor(lctx);
@@ -1445,6 +1645,7 @@ function newStrokeId() {
 function beginDrawAtClient(clientX, clientY, p, source) {
   const [nx, ny] = normFromClient(clientX, clientY);
   const id = newStrokeId();
+  rulerLockSide = 0;
 
   if (tool === 'Eraser') {
     drawPointerErasing = true;
@@ -1473,10 +1674,13 @@ function beginDrawAtClient(clientX, clientY, p, source) {
     return;
   }
 
-  activeLocal.set(id, { color: normalizeColorHex(color), size, pts: [nx, ny, p], usePressure: pressureSensitive });
+  // With the ruler on, a pen-down beside one of its edges locks the whole stroke to that edge.
+  rulerLockSide = rulerEdgeSide(clientX, clientY);
+  const [sx, sy] = rulerLockSide ? rulerSnapNorm(clientX, clientY, rulerLockSide) : [nx, ny];
+  activeLocal.set(id, { color: normalizeColorHex(color), size, pts: [sx, sy, p], usePressure: pressureSensitive });
   frameCanvas._activeStrokeId = id;
-  log(`draw begin ${tool} ${source} (${nx.toFixed(3)},${ny.toFixed(3)})`);
-  send({ t: 'strokeBegin', id, color, size, x: nx, y: ny, p });
+  log(`draw begin ${tool} ${source} (${sx.toFixed(3)},${sy.toFixed(3)})${rulerLockSide ? ' ruler' : ''}`);
+  send({ t: 'strokeBegin', id, color, size, x: sx, y: sy, p });
 }
 
 function continueDrawAtClient(clientX, clientY, p) {
@@ -1493,7 +1697,7 @@ function continueDrawAtClient(clientX, clientY, p) {
   const strokeId = frameCanvas._activeStrokeId;
   const stroke = strokeId ? activeLocal.get(strokeId) : null;
   if (stroke) {
-    const [nx, ny] = normFromClient(clientX, clientY);
+    const [nx, ny] = rulerLockSide ? rulerSnapNorm(clientX, clientY, rulerLockSide) : normFromClient(clientX, clientY);
     stroke.pts.push(nx, ny, p);
     batchPoints.push(nx, ny, p);
     scheduleBatch(strokeId);
@@ -1536,6 +1740,7 @@ function eraseSegment(gesture, ax, ay, bx, by) {
 }
 
 function endDraw() {
+  rulerLockSide = 0;
   if (eraserCursor) {
     eraserCursor = null;
     redrawInk();
@@ -1737,6 +1942,59 @@ function isStylusTouch(touch) {
   return false;
 }
 
+/**
+ * Two fingers that both land on the ruler move and rotate it instead of the page. Returns true if it took the
+ * gesture. The Pencil never moves the ruler (a gesture that includes a stylus touch is left to the page).
+ */
+function rulerGestureStart(e) {
+  if (!ruler.on || e.touches.length !== 2) return false;
+  const a = e.touches[0];
+  const b = e.touches[1];
+  if (isStylusTouch(a) || isStylusTouch(b)) return false;
+  if (!rulerHit(a.clientX, a.clientY) || !rulerHit(b.clientX, b.clientY)) return false;
+  e.preventDefault();
+  const [ax, ay] = clientToInnerView(a.clientX, a.clientY);
+  const [bx, by] = clientToInnerView(b.clientX, b.clientY);
+  touchGesture = { kind: 'ruler', idA: a.identifier, idB: b.identifier, ax, ay, bx, by };
+  showRulerAngle();
+  return true;
+}
+
+/** Carries the ruler with the two fingers: it follows their midpoint and turns with the line between them. */
+function rulerGestureMove(e) {
+  const g = touchGesture;
+  let a = null;
+  let b = null;
+  for (let i = 0; i < e.touches.length; i++) {
+    const t = e.touches[i];
+    if (t.identifier === g.idA) a = t;
+    else if (t.identifier === g.idB) b = t;
+  }
+  if (!a || !b) return;
+  const [ax, ay] = clientToInnerView(a.clientX, a.clientY);
+  const [bx, by] = clientToInnerView(b.clientX, b.clientY);
+  const delta = normalizeAngleDelta(Math.atan2(by - ay, bx - ax) - Math.atan2(g.by - g.ay, g.bx - g.ax));
+  const prevMidX = (g.ax + g.bx) / 2;
+  const prevMidY = (g.ay + g.by) / 2;
+  const midX = (ax + bx) / 2;
+  const midY = (ay + by) / 2;
+  // Turn the ruler's center about the old midpoint, then carry it to the new one.
+  const c = Math.cos(delta);
+  const s = Math.sin(delta);
+  const ox = ruler.cx - prevMidX;
+  const oy = ruler.cy - prevMidY;
+  ruler.cx = midX + ox * c - oy * s;
+  ruler.cy = midY + ox * s + oy * c;
+  ruler.rawAngle += delta;
+  rulerApplyAngleSnap();
+  showRulerAngle();
+  g.ax = ax;
+  g.ay = ay;
+  g.bx = bx;
+  g.by = by;
+  scheduleRulerRedraw();
+}
+
 function startStylusDraw(touch, e) {
   if (!canInteract()) {
     log('stylus blocked: not ready');
@@ -1778,6 +2036,7 @@ function onTouchStart(e) {
         break;
       }
     }
+    if (rulerGestureStart(e)) return;
     const ang = touchAngle(e.touches);
     touchGesture = {
       kind: 'pinch',
@@ -1835,6 +2094,13 @@ function onTouchMove(e) {
     }
   }
   if (!touchGesture) return;
+  if (touchGesture.kind === 'ruler') {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      rulerGestureMove(e);
+    }
+    return;
+  }
   if (e.touches.length === 2 && touchGesture.kind === 'pinch') {
     e.preventDefault();
     const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
@@ -1870,6 +2136,8 @@ function onTouchMove(e) {
 }
 
 function onTouchEnd(e) {
+  // A finger lifting ends the ruler gesture; the angle readout lingers for a second, then fades.
+  if (touchGesture && touchGesture.kind === 'ruler' && e.touches.length < 2) hideRulerAngle();
   if (debugLog) {
     for (let i = 0; i < e.changedTouches.length; i++) {
       if (isStylusTouch(e.changedTouches[i])) log(`stylus ${e.type} t=${Math.round(e.timeStamp)}`);
@@ -2323,6 +2591,8 @@ function buildDock() {
   };
   eraserBtn.innerHTML = icon('eraser', 22);
   eraserBtn.onclick = () => { closePopover(); selectTool('Eraser'); };
+  rulerBtn.innerHTML = icon('ruler', 22);
+  rulerBtn.onclick = () => { closePopover(); setRulerOn(!ruler.on); };
 
   renderSwatches();
   initCustomColorUi();
@@ -2409,6 +2679,8 @@ function updateUi() {
   toolBtn.classList.toggle('active', tool !== 'Eraser');
   eraserBtn.classList.toggle('active', tool === 'Eraser');
   eraserBtn.setAttribute('aria-pressed', tool === 'Eraser' ? 'true' : 'false');
+  rulerBtn.classList.toggle('lit', ruler.on);
+  rulerBtn.setAttribute('aria-pressed', ruler.on ? 'true' : 'false');
   const current = normalizeColorHex(color);
   colorDot.style.background = current;
   for (const [c, s] of swatchButtons) {

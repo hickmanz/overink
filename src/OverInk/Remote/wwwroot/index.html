@@ -7,12 +7,13 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0f1115" />
   <title>OverInk Remote</title>
-  <link rel="stylesheet" href="styles.css?v=18" />
+  <link rel="stylesheet" href="styles.css?v=20" />
 </head>
 <body>
   <div id="root">
     <canvas id="frame"></canvas>
     <canvas id="peerInk"></canvas>
+    <canvas id="rulerInk"></canvas>
     <canvas id="localInk"></canvas>
     <div id="inputSurface" tabindex="0" aria-label="Drawing surface"></div>
 
@@ -36,6 +37,9 @@
         <button type="button" id="docLoadPc" class="banner-btn primary">Load PC version</button>
       </div>
     </div>
+
+    <!-- Ruler angle: shown while the ruler is being moved, fades a second after release -->
+    <div id="rulerAngle" class="ruler-angle" role="status" aria-live="off">0°</div>
 
     <div id="toast" class="ui toast panel-hidden" role="status">
       <span id="toastText"></span>
@@ -151,6 +155,7 @@
           <!-- Pen / line / arrow / rectangle / ellipse live behind this one button; it shows the current one -->
           <button type="button" id="toolBtn" class="dock-btn has-menu" aria-label="Drawing tool" title="Drawing tool" aria-haspopup="true"></button>
           <button type="button" id="eraserBtn" class="dock-btn" aria-label="Eraser" title="Eraser"></button>
+          <button type="button" id="rulerBtn" class="dock-btn" aria-label="Ruler" title="Ruler: draw along its edge; move it with two fingers" aria-pressed="false"></button>
         </div>
         <span class="divider"></span>
         <div class="group">
@@ -180,6 +185,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=33"></script>
+  <script type="module" src="app.js?v=44"></script>
 </body>
 </html>

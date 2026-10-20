@@ -1,4 +1,4 @@
-import { icon } from './icons.js?v=4';
+import { icon } from './icons.js?v=5';
 // Module URLs are matched exactly by the browser cache: keep this ?v= on icons.js identical to the one in app.js.
 
 /** HTTP failure from the PC's /lib endpoints. `status` is the HTTP status, `body` the parsed JSON error if any. */
