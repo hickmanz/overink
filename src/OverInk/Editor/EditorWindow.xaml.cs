@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -541,31 +541,6 @@ public partial class EditorWindow : Window
         }
     }
 
-    /// <summary>
-    /// Puts the editor back on top of the other topmost windows (the markup overlay re-raises itself whenever
-    /// it is activated) without taking focus. Other apps are already behind it because it is topmost.
-    /// </summary>
-    public void RaiseAboveOverlay()
-    {
-        if (!IsVisible)
-        {
-            return;
-        }
-
-        var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-        if (handle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        OverInk.Interop.NativeMethods.SetWindowPos(
-            handle,
-            new IntPtr(-1), // HWND_TOPMOST
-            0, 0, 0, 0,
-            OverInk.Interop.NativeMethods.SwpNomove |
-            OverInk.Interop.NativeMethods.SwpNosize |
-            OverInk.Interop.NativeMethods.SwpNoactivate);
-    }
 
     private void InkSurface_PreviewMouseMove(object sender, MouseEventArgs e) =>
         UpdateBrushCursor(e.GetPosition(BrushCursorLayer));

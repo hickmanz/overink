@@ -61,9 +61,48 @@ public partial class App : Application
             _host?.Dispose();
             _showToolbarSignal?.Dispose();
             _openEditorSignal?.Dispose();
-            _singleInstanceMutex?.ReleaseMutex();
+            ReleaseSingleInstanceMutex();
             _singleInstanceMutex?.Dispose();
         };
+    }
+
+    /// <summary>
+    /// Lets another process's "is OverInk running?" check pass while this copy keeps running. The installer
+    /// is built with AppMutex on this mutex and, run silently, cancels itself if the mutex exists at all
+    /// (it only checks that the name can be opened, not who owns it), so ownership alone isn't enough: the
+    /// handle has to be closed. Once past that check the installer closes this copy itself (see
+    /// InstallerCloseHook). Must run on the thread that created the mutex.
+    /// </summary>
+    public static void ReleaseSingleInstanceMutex()
+    {
+        var mutex = _singleInstanceMutex;
+        _singleInstanceMutex = null;
+        if (mutex == null)
+        {
+            return;
+        }
+
+        try
+        {
+            mutex.ReleaseMutex();
+        }
+        catch (ApplicationException)
+        {
+            // Not owned (already released).
+        }
+
+        mutex.Dispose();
+    }
+
+    /// <summary>Takes the single-instance mutex back, e.g. when the installer could not be started.</summary>
+    public static void ReacquireSingleInstanceMutex()
+    {
+        if (_singleInstanceMutex != null)
+        {
+            return;
+        }
+
+        _singleInstanceMutex = new Mutex(true, MutexName, out _);
     }
 
     private static void SignalRunningInstance(string eventName)

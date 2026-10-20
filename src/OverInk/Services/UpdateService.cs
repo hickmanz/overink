@@ -46,10 +46,80 @@ public sealed class UpdateService : IDisposable
         _ownsClient = httpClient == null;
         _http = httpClient ?? CreateClient();
         _isInstalledCopy = isInstalledCopy ?? (() => InstallDetector.IsRunningInstalledCopy());
-        _downloadDirectory = downloadDirectory ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "OverInk",
-            "updates");
+        _downloadDirectory = downloadDirectory ?? DefaultDownloadDirectory;
+    }
+
+    public static string DefaultDownloadDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "OverInk",
+        "updates");
+
+    /// <summary>
+    /// Removes what a finished update left behind: half-downloaded files and any installer that is not newer
+    /// than the running version (so it has already been installed). A newer installer is kept, together with
+    /// its checksums and setup log, because that means an update hasn't completed. Never throws; a file that
+    /// is still in use is simply picked up on the next launch.
+    /// </summary>
+    public static void CleanUpDownloads(string currentVersion, string? directory = null)
+    {
+        try
+        {
+            directory ??= DefaultDownloadDirectory;
+            if (!Directory.Exists(directory))
+            {
+                return;
+            }
+
+            foreach (var partial in Directory.EnumerateFiles(directory, "*.partial"))
+            {
+                TryDelete(partial);
+            }
+
+            var pendingInstallers = 0;
+            foreach (var installer in Directory.EnumerateFiles(directory, "OverInk-Setup-*.exe"))
+            {
+                var name = Path.GetFileNameWithoutExtension(installer);
+                var version = name["OverInk-Setup-".Length..];
+                if (!AppVersion.IsNewer(currentVersion, version))
+                {
+                    if (!TryDelete(installer))
+                    {
+                        pendingInstallers++;
+                    }
+                }
+                else
+                {
+                    pendingInstallers++;
+                }
+            }
+
+            if (pendingInstallers == 0)
+            {
+                TryDelete(Path.Combine(directory, "SHA256SUMS.txt"));
+                TryDelete(Path.Combine(directory, "setup.log"));
+                if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                {
+                    Directory.Delete(directory);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best effort only.
+        }
+    }
+
+    private static bool TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     public Task<UpdateCheckResult> CheckAsync(CancellationToken cancellationToken = default) =>
@@ -133,11 +203,13 @@ public sealed class UpdateService : IDisposable
 
     public static void LaunchInstaller(string setupPath)
     {
+        // The log sits next to the downloaded installer so a failed update can be diagnosed afterwards.
+        var logPath = Path.Combine(Path.GetDirectoryName(setupPath) ?? Path.GetTempPath(), "setup.log");
         var started = Process.Start(new ProcessStartInfo
         {
             FileName = setupPath,
             // Very silent: no wizard. The installer closes this process, then the setup script starts the new copy.
-            Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS",
+            Arguments = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /LOG=\"{logPath}\"",
             UseShellExecute = true
         });
         if (started == null)

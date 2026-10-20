@@ -19,8 +19,10 @@ public sealed class AppSettings
     public bool RunAtStartup { get; set; }
     /// <summary>UTC time of the last update check that reached GitHub. Null until the first successful check.</summary>
     public DateTime? LastUpdateCheckUtc { get; set; }
-    /// <summary>Release version the user chose "Not now" for. A newer tag still prompts.</summary>
+    /// <summary>Release version the user last chose "Not now" for. A newer tag starts the count over.</summary>
     public string SkippedUpdateVersion { get; set; } = "";
+    /// <summary>How many times "Not now" was chosen for <see cref="SkippedUpdateVersion"/>; the startup prompt stops after a few.</summary>
+    public int SkippedUpdateCount { get; set; }
     public bool HideToolbarWhenNotDrawing { get; set; }
     public uint HotkeyModifiers { get; set; } = NativeMethodsDefaults.DefaultHotkeyModifiers;
     public uint HotkeyVirtualKey { get; set; } = 0x44; // D

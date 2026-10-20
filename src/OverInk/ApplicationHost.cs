@@ -566,27 +566,8 @@ public sealed class ApplicationHost : IDisposable
             _editor = new EditorWindow(_captureLibrary, _session.PenColor, _session.PenThickness);
             // The screen veil sits on a topmost overlay, so it would wash out the editor; hide it while open.
             _overlay.SetEditorOpen(true);
-            // The editor is topmost so every other app stays behind it, but the (also topmost) markup overlay
-            // jumps above it whenever it is activated; push the editor back in front.
-            void KeepEditorInFront(object? sender, EventArgs e)
-            {
-                _editor?.RaiseAboveOverlay();
-                // The toolbar stays above the editor so it never gets buried under it.
-                if (_toolbar.IsVisible)
-                {
-                    var handle = new System.Windows.Interop.WindowInteropHelper(_toolbar).Handle;
-                    NativeMethods.SetWindowPos(
-                        handle,
-                        new IntPtr(-1),
-                        0, 0, 0, 0,
-                        NativeMethods.SwpNomove | NativeMethods.SwpNosize | NativeMethods.SwpNoactivate);
-                }
-            }
-
-            _overlay.Activated += KeepEditorInFront;
             _editor.Closed += (_, _) =>
             {
-                _overlay.Activated -= KeepEditorInFront;
                 _editor = null;
                 _overlay.SetEditorOpen(false);
             };
@@ -791,6 +772,8 @@ public sealed class ApplicationHost : IDisposable
         try
         {
             await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            // After a successful update the installer that just ran is still on disk; tidy it up.
+            UpdateService.CleanUpDownloads(AppVersion.Current);
             await Application.Current.Dispatcher.InvokeAsync(async () =>
             {
                 if (_disposed || _updateCheckRunning)
@@ -845,7 +828,7 @@ public sealed class ApplicationHost : IDisposable
                 return;
             }
 
-            var skipped = !userInitiated && _settings.Current.SkippedUpdateVersion == offer.Version;
+            var skipped = !userInitiated && !UpdateReminder.ShouldPromptAutomatically(_settings.Current, offer.Version);
             if (skipped)
             {
                 return;
@@ -859,7 +842,7 @@ public sealed class ApplicationHost : IDisposable
                     "Not now");
                 if (!install)
                 {
-                    _settings.Current.SkippedUpdateVersion = offer.Version;
+                    UpdateReminder.RecordDismissal(_settings.Current, offer.Version);
                     _settings.Save();
                     return;
                 }
@@ -900,7 +883,19 @@ public sealed class ApplicationHost : IDisposable
                 return false;
             }
 
-            UpdateService.LaunchInstaller(setupPath);
+            // Setup refuses to run (silently cancels) while this copy holds the single-instance mutex, because
+            // that is what its AppMutex check looks for. Let go of it, then Setup closes this copy itself.
+            App.ReleaseSingleInstanceMutex();
+            try
+            {
+                UpdateService.LaunchInstaller(setupPath);
+            }
+            catch
+            {
+                App.ReacquireSingleInstanceMutex();
+                throw;
+            }
+
             _toolbar.SetUpdateCheckBusy(true, "Installing…");
             _toolbar.SetUpdateStatus("Installing… OverInk will reopen when it finishes.");
             _ = ReenableUpdateButtonIfStillRunningAsync();
@@ -934,6 +929,7 @@ public sealed class ApplicationHost : IDisposable
             }
 
             _updateCheckRunning = false;
+            App.ReacquireSingleInstanceMutex();
             _toolbar.SetUpdateCheckBusy(false);
             _toolbar.SetUpdateStatus("The installer didn't finish. You can try again.", isError: true);
         });
