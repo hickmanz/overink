@@ -318,6 +318,93 @@ public sealed class CaptureLibrary : IDisposable
         };
     }
 
+    /// <summary>Matches the " copy" / " copy 3" tail that duplicates get, so a copy of a copy doesn't pile them up.</summary>
+    private static readonly System.Text.RegularExpressions.Regex CopySuffix =
+        new(@" copy( \d+)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Copies a capture (flattened image, clean original, ink and veil) under a new name: "name copy", then
+    /// "name copy 2" and so on. The copy is stamped as new, so it lists first. Returns null if copying failed
+    /// (nothing is left behind in that case). This only copies files, so it can run on any thread.
+    /// </summary>
+    public CaptureItem? Duplicate(CaptureItem item)
+    {
+        if (!File.Exists(item.FlattenedPath))
+        {
+            return null;
+        }
+
+        var baseName = UniqueCopyName(item.DisplayName);
+        var newFlattened = Path.Combine(_folder, $"{baseName}.png");
+        var made = new List<string>();
+        try
+        {
+            File.Copy(item.FlattenedPath, newFlattened, overwrite: false);
+            made.Add(newFlattened);
+
+            if (item.HasEditableSidecars)
+            {
+                foreach (var suffix in new[] { ".orig.png", ".isf", ".veil" })
+                {
+                    var from = SidecarPath(item.SidecarBaseName!, suffix);
+                    if (!File.Exists(from))
+                    {
+                        continue;
+                    }
+
+                    var to = SidecarPath(baseName, suffix);
+                    File.Copy(from, to, overwrite: true);
+                    made.Add(to);
+                }
+            }
+
+            // A copy keeps the source's timestamps; make it new so it sorts to the top of the library.
+            File.SetCreationTime(newFlattened, DateTime.Now);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            foreach (var path in made)
+            {
+                try
+                {
+                    File.Delete(path);
+                }
+                catch
+                {
+                    // best effort
+                }
+            }
+
+            return null;
+        }
+
+        RaiseChanged();
+        return new CaptureItem
+        {
+            FlattenedPath = newFlattened,
+            CreatedAt = File.GetCreationTime(newFlattened),
+            SidecarBaseName = item.HasEditableSidecars ? baseName : null
+        };
+    }
+
+    private string UniqueCopyName(string name)
+    {
+        var stem = CopySuffix.Replace(name, string.Empty);
+        if (string.IsNullOrWhiteSpace(stem))
+        {
+            stem = name;
+        }
+
+        for (var n = 1; ; n++)
+        {
+            var candidate = n == 1 ? $"{stem} copy" : $"{stem} copy {n}";
+            if (!File.Exists(Path.Combine(_folder, $"{candidate}.png")))
+            {
+                return candidate;
+            }
+        }
+    }
+
     public void Delete(CaptureItem item)
     {
         if (File.Exists(item.FlattenedPath))

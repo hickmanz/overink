@@ -137,6 +137,73 @@ public sealed class RemoteLibraryTests : IDisposable
         Assert.Empty(library.LoadStrokes(editable));
     }
 
+    [Fact]
+    public void Duplicate_copies_image_ink_and_veil_and_leaves_the_source_alone()
+    {
+        using var library = new CaptureLibrary(_folder);
+        var (source, copy, copyStrokes, copyVeil) = RunSta(() =>
+        {
+            var ink = RemoteLibraryService.BuildStrokes(new[]
+            {
+                new RemoteLibraryStroke("#FF0000", 10, new float[] { 10, 50, 0.5f, 90, 50, 0.5f }, IgnorePressure: true)
+            });
+            var created = library.CreateFromCapture(Solid(100, 100, Colors.White), ink, veil: 0.3);
+            var duplicate = library.Duplicate(created)!;
+            return (created, duplicate, library.LoadStrokes(duplicate).Count, library.LoadVeil(duplicate));
+        });
+
+        Assert.Equal(source.Id + " copy", copy.Id);
+        Assert.True(copy.HasEditableSidecars);
+        Assert.True(File.Exists(copy.FlattenedPath));
+        Assert.True(File.Exists(library.OriginalPathFor(copy)));
+        Assert.Equal(1, copyStrokes);
+        Assert.Equal(0.3, copyVeil, 3);
+        Assert.Equal(File.ReadAllBytes(source.FlattenedPath), File.ReadAllBytes(copy.FlattenedPath));
+        Assert.Equal(2, library.Enumerate().Count);
+        Assert.True(File.Exists(source.FlattenedPath));
+        Assert.NotNull(library.TryGet(copy.Id));
+    }
+
+    [Fact]
+    public void Duplicate_names_count_up_and_a_copy_of_a_copy_does_not_stack_suffixes()
+    {
+        using var library = new CaptureLibrary(_folder);
+        var item = library.CreateFromCapture(Solid(20, 20, Colors.White));
+        library.Rename(item, "sketch");
+        var original = library.TryGet("sketch")!;
+
+        var first = library.Duplicate(original)!;
+        var second = library.Duplicate(original)!;
+        var ofCopy = library.Duplicate(first)!;
+
+        Assert.Equal("sketch copy", first.Id);
+        Assert.Equal("sketch copy 2", second.Id);
+        Assert.Equal("sketch copy 3", ofCopy.Id);
+        Assert.Equal(4, library.Enumerate().Count);
+    }
+
+    [Fact]
+    public void Duplicate_of_a_plain_png_stays_plain_and_a_missing_source_is_refused()
+    {
+        using var library = new CaptureLibrary(_folder);
+        var plain = Path.Combine(_folder, "dropped.png");
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(Solid(20, 10, Colors.Blue)));
+        using (var stream = File.Create(plain))
+        {
+            encoder.Save(stream);
+        }
+
+        var item = library.TryGet("dropped")!;
+        var copy = library.Duplicate(item)!;
+
+        Assert.Equal("dropped copy", copy.Id);
+        Assert.False(copy.HasEditableSidecars);
+
+        library.Delete(item);
+        Assert.Null(library.Duplicate(item));
+    }
+
     // ------------------------------------------------------------ ink conversion
 
     [Fact]
@@ -426,6 +493,34 @@ public sealed class RemoteLibraryTests : IDisposable
 
             Assert.Equal(HttpStatusCode.NotFound, (await http.DeleteAsync($"/lib/{id}?k={token}")).StatusCode);
         }
+    }
+
+    [Fact]
+    public async Task Http_duplicate_requires_a_token_and_returns_the_new_entry()
+    {
+        using var library = new CaptureLibrary(_folder);
+        var item = library.CreateFromCapture(Solid(40, 30, Colors.White));
+        using var service = new RemoteLibraryService(library, () => true);
+        await using var app = await StartAsync(service);
+        using var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await http.PostAsync($"/lib/{item.Id}/duplicate", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await http.PostAsync($"/lib/{item.Id}/duplicate?k=wrong", null)).StatusCode);
+        Assert.Single(library.Enumerate());
+
+        var token = service.IssueToken("device", "client");
+        Assert.Equal(HttpStatusCode.NotFound, (await http.PostAsync($"/lib/missing/duplicate?k={token}", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await http.PostAsync($"/lib/..%2F..%2Fwindows%2Fwin/duplicate?k={token}", null)).StatusCode);
+
+        var response = await http.PostAsync($"/lib/{item.Id}/duplicate?k={token}", null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var entry = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(item.Id + " copy", entry.GetProperty("id").GetString());
+        Assert.Equal(40, entry.GetProperty("w").GetInt32());
+        Assert.Equal(2, library.Enumerate().Count);
+
+        var list = await http.GetFromJsonAsync<JsonElement>($"/lib?k={token}");
+        Assert.Equal(2, list.GetArrayLength());
     }
 
     [Fact]

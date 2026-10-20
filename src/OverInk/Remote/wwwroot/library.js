@@ -1,4 +1,4 @@
-import { icon } from './icons.js?v=5';
+import { icon } from './icons.js?v=6';
 // Module URLs are matched exactly by the browser cache: keep this ?v= on icons.js identical to the one in app.js.
 
 /** HTTP failure from the PC's /lib endpoints. `status` is the HTTP status, `body` the parsed JSON error if any. */
@@ -74,7 +74,130 @@ export function createLibraryApi(getToken) {
     },
     async remove(id) {
       await request(`/lib/${enc(id)}`, { method: 'DELETE' });
+    },
+    /** Copies a capture on the PC; resolves with the new library entry. */
+    async duplicate(id) {
+      return (await request(`/lib/${enc(id)}/duplicate`, { method: 'POST' })).json();
     }
+  };
+}
+
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP_PX = 10;
+
+let cardMenu = null;
+
+function closeCardMenu() {
+  if (!cardMenu) return;
+  cardMenu.card.classList.remove('menu-open');
+  cardMenu.layer.remove();
+  document.removeEventListener('keydown', cardMenu.onKey, true);
+  cardMenu = null;
+}
+
+/** Floating menu for one capture, placed beside the press point and kept on screen. */
+function showCardMenu(card, item, x, y, handlers) {
+  closeCardMenu();
+
+  const layer = document.createElement('div');
+  layer.className = 'ui lib-menu-layer';
+  layer.addEventListener('pointerdown', (e) => {
+    if (e.target === layer) { e.preventDefault(); closeCardMenu(); }
+  });
+  layer.addEventListener('contextmenu', (e) => { e.preventDefault(); if (e.target === layer) closeCardMenu(); });
+
+  const menu = document.createElement('div');
+  menu.className = 'lib-menu';
+  menu.setAttribute('role', 'menu');
+
+  const title = document.createElement('div');
+  title.className = 'lib-menu-title';
+  title.textContent = item.name;
+  menu.appendChild(title);
+
+  const duplicate = document.createElement('button');
+  duplicate.type = 'button';
+  duplicate.className = 'lib-menu-item';
+  duplicate.setAttribute('role', 'menuitem');
+  duplicate.innerHTML = `${icon('copy', 20)}<span>Duplicate</span>`;
+  duplicate.addEventListener('click', async () => {
+    closeCardMenu();
+    card.classList.add('busy');
+    try {
+      await handlers.onDuplicate(item);
+    } catch {
+      // the handler already told the user
+    } finally {
+      card.classList.remove('busy');
+    }
+  });
+  menu.appendChild(duplicate);
+
+  layer.appendChild(menu);
+  document.body.appendChild(layer);
+
+  const onKey = (e) => { if (e.key === 'Escape') closeCardMenu(); };
+  document.addEventListener('keydown', onKey, true);
+  card.classList.add('menu-open');
+  cardMenu = { layer, card, onKey };
+
+  // Above the finger when there is room (it would be hidden under the hand otherwise), else below it.
+  const margin = 10;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(Math.max(x - rect.width / 2, margin), window.innerWidth - rect.width - margin);
+  const above = y - rect.height - 18;
+  const top = above >= margin ? above : Math.min(y + 18, window.innerHeight - rect.height - margin);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(Math.max(top, margin))}px`;
+}
+
+/**
+ * Opens `showCardMenu` on a press-and-hold (or a right click) on the card. Returns a function that reports
+ * (once) whether a hold just fired, so the tap that ends the hold can be ignored.
+ */
+function attachCardMenu(card, item, handlers) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  let held = false;
+
+  const cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+
+  card.addEventListener('pointerdown', (e) => {
+    held = false;
+    cancel();
+    if (e.button > 0 || e.target.closest('.lib-delete')) return;
+    startX = e.clientX;
+    startY = e.clientY;
+    timer = setTimeout(() => {
+      timer = null;
+      held = true;
+      showCardMenu(card, item, startX, startY, handlers);
+    }, LONG_PRESS_MS);
+  });
+  card.addEventListener('pointermove', (e) => {
+    if (timer && Math.hypot(e.clientX - startX, e.clientY - startY) > LONG_PRESS_SLOP_PX) cancel();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'pointerleave']) card.addEventListener(type, cancel);
+
+  // Mouse right click (and any browser that raises it for a long touch). Never let the native menu show.
+  card.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    cancel();
+    if (!cardMenu || cardMenu.card !== card) {
+      held = true;
+      showCardMenu(card, item, e.clientX, e.clientY, handlers);
+    }
+  });
+
+  // The finger that opened the menu lifts over the card: don't also treat it as a tap that opens the capture.
+  return () => {
+    const wasHeld = held;
+    held = false;
+    return wasHeld;
   };
 }
 
@@ -88,9 +211,11 @@ function formatTime(ms) {
 
 /**
  * Renders the capture grid. `handlers.onOpen(item)` opens a capture; `handlers.onDelete(item)` deletes it
- * (called after the card's two-tap confirmation) and returns a promise.
+ * (called after the card's two-tap confirmation) and returns a promise; `handlers.onDuplicate(item)` copies it
+ * (from the press-and-hold menu) and returns a promise.
  */
 export function renderLibraryGrid(gridEl, items, api, handlers) {
+  closeCardMenu();
   gridEl.textContent = '';
   for (const item of items) {
     const card = document.createElement('div');
@@ -119,7 +244,11 @@ export function renderLibraryGrid(gridEl, items, api, handlers) {
     time.textContent = formatTime(item.createdAt);
     open.appendChild(time);
 
-    open.addEventListener('click', () => handlers.onOpen(item));
+    const consumeHold = attachCardMenu(card, item, handlers);
+    open.addEventListener('click', () => {
+      if (consumeHold()) return;
+      handlers.onOpen(item);
+    });
     card.appendChild(open);
 
     const del = document.createElement('button');

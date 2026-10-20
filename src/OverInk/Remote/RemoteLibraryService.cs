@@ -157,6 +157,7 @@ public sealed class RemoteLibraryService : IDisposable
         app.MapGet("/lib/{id}/original", OriginalAsync);
         app.MapGet("/lib/{id}/strokes", GetStrokesAsync);
         app.MapPost("/lib/{id}/strokes", SaveStrokesAsync);
+        app.MapPost("/lib/{id}/duplicate", DuplicateAsync);
         app.MapDelete("/lib/{id}", DeleteAsync);
     }
 
@@ -368,6 +369,42 @@ public sealed class RemoteLibraryService : IDisposable
         {
             RemoteDebugLog.Write($"lib save failed id={id}: {ex.Message}");
             return Results.Problem("Saving failed.");
+        }
+        finally
+        {
+            _saveGate.Release();
+        }
+    }
+
+    /// <summary>Copies a capture under a new name and returns the new library entry.</summary>
+    private async Task<IResult> DuplicateAsync(HttpContext ctx, string id)
+    {
+        if (Reject(ctx) is { } denied)
+        {
+            return denied;
+        }
+
+        var item = _library.TryGet(id);
+        if (item is null)
+        {
+            return Results.NotFound();
+        }
+
+        await _saveGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var copy = await Task.Run(() => _library.Duplicate(item)).ConfigureAwait(false);
+            if (copy is null)
+            {
+                return Results.Problem("Duplicating failed.");
+            }
+
+            return Results.Json(ToDto(copy), RemoteJson.Options);
+        }
+        catch (Exception ex)
+        {
+            RemoteDebugLog.Write($"lib duplicate failed id={id}: {ex.Message}");
+            return Results.Problem("Duplicating failed.");
         }
         finally
         {

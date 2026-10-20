@@ -1,5 +1,5 @@
-import { icon } from './icons.js?v=5';
-import { createLibraryApi, renderLibraryGrid, LibraryError } from './library.js?v=3';
+import { icon } from './icons.js?v=6';
+import { createLibraryApi, renderLibraryGrid, LibraryError } from './library.js?v=4';
 
 const params = new URLSearchParams(location.search);
 const allowMouse = params.get('mouse') === '1'
@@ -2849,7 +2849,8 @@ async function refreshLibrary({ silent = false } = {}) {
   libError.classList.add('panel-hidden');
   renderLibraryGrid(libGrid, libraryItems, libraryApi, {
     onOpen: (item) => openDocument(item.id, item.name),
-    onDelete: deleteCapture
+    onDelete: deleteCapture,
+    onDuplicate: duplicateCapture
   });
   libEmpty.classList.toggle('panel-hidden', libraryItems.length > 0);
   libCount.textContent = `${libraryItems.length} capture${libraryItems.length === 1 ? '' : 's'}`;
@@ -2863,6 +2864,21 @@ async function deleteCapture(item) {
     throw err;
   }
   await refreshLibrary({ silent: true });
+}
+
+async function duplicateCapture(item) {
+  let copy;
+  try {
+    copy = await libraryApi.duplicate(item.id);
+  } catch (err) {
+    showToast(`Could not duplicate: ${libErrorText(err)}`, { kind: 'error' });
+    throw err;
+  }
+  await refreshLibrary({ silent: true });
+  showToast(`Duplicated as ${copy.name}`, {
+    action: { label: 'Open', run: () => openDocument(copy.id, copy.name) },
+    ms: 6000
+  });
 }
 
 function openLibrary() {

@@ -1413,6 +1413,7 @@ public partial class EditorWindow : Window
             Copy_Click(this, new RoutedEventArgs());
         }));
 
+        menu.Items.Add(MenuEntry("Duplicate", "IconCopyPlus", () => DuplicateItem(entry)));
         menu.Items.Add(MenuEntry("Show in Explorer", "IconFolder", () => RevealInExplorer(entry.Item.FlattenedPath)));
         menu.Items.Add(MenuEntry("Rename…", "IconPencil", () => RenameItem(entry)));
         menu.Items.Add(MenuSeparator());
@@ -1465,6 +1466,33 @@ public partial class EditorWindow : Window
 
         RefreshTray(keepSelection: true);
         SelectItemInTray(updated);
+    }
+
+    private void DuplicateItem(CaptureTrayEntry entry)
+    {
+        // Save first: unsaved edits to the open capture would otherwise be missing from the copy.
+        TrySaveCurrent();
+
+        CaptureItem? copy;
+        try
+        {
+            copy = _library.Duplicate(entry.Item);
+        }
+        catch
+        {
+            copy = null;
+        }
+
+        if (copy is null)
+        {
+            ShowStatus("Duplicate failed");
+            return;
+        }
+
+        LoadItem(copy);
+        RefreshTray(keepSelection: true);
+        SelectItemInTray(copy);
+        ShowStatus("Duplicated");
     }
 
     private void DeleteItem(CaptureTrayEntry entry)
