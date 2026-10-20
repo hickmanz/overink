@@ -586,13 +586,7 @@ public sealed class ApplicationHost : IDisposable
         if (_editor is null)
         {
             _editor = new EditorWindow(_captureLibrary, _session.PenColor, _session.PenThickness, _session.CustomColors);
-            // The screen veil sits on a topmost overlay, so it would wash out the editor; hide it while open.
-            _overlay.SetEditorOpen(true);
-            _editor.Closed += (_, _) =>
-            {
-                _editor = null;
-                _overlay.SetEditorOpen(false);
-            };
+            _editor.Closed += (_, _) => _editor = null;
         }
 
         return _editor;

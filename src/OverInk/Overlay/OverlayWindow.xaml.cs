@@ -387,7 +387,6 @@ public partial class OverlayWindow : Window
     private void HidePenCursor() => _penCursor?.HideCursor();
 
     private bool _remoteActive;
-    private bool _editorOpen;
 
     /// <summary>
     /// The veil shows while drawing on the PC, or while a remote tablet is connected (tablet strokes
@@ -396,7 +395,7 @@ public partial class OverlayWindow : Window
     private void UpdateVeil()
     {
         var active = _session.Mode == InteractionMode.Draw || _remoteActive;
-        var show = active && !_editorOpen && _session.ScreenVeil > 0;
+        var show = active && _session.ScreenVeil > 0;
         ScreenVeil.Opacity = show ? _session.ScreenVeil : 0;
         ScreenVeil.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -404,13 +403,6 @@ public partial class OverlayWindow : Window
     public void SetRemoteActive(bool active)
     {
         _remoteActive = active;
-        UpdateVeil();
-    }
-
-    /// <summary>The editor is a normal window below this topmost overlay, so the veil is hidden while it is open.</summary>
-    public void SetEditorOpen(bool open)
-    {
-        _editorOpen = open;
         UpdateVeil();
     }
 
