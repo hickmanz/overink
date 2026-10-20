@@ -76,41 +76,7 @@ public static class RemoteNetworkHelper
 
     public static string? GetPreferredLanIPv4()
     {
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            if (nic.OperationalStatus != OperationalStatus.Up)
-            {
-                continue;
-            }
-
-            if (nic.NetworkInterfaceType is not (NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet))
-            {
-                continue;
-            }
-
-            var name = nic.Description.ToLowerInvariant();
-            if (name.Contains("virtual") || name.Contains("hyper-v") || name.Contains("vethernet") || name.Contains("wsl"))
-            {
-                continue;
-            }
-
-            var props = nic.GetIPProperties();
-            if (props.GatewayAddresses.Count == 0)
-            {
-                continue;
-            }
-
-            foreach (var uni in props.UnicastAddresses)
-            {
-                if (uni.Address.AddressFamily == AddressFamily.InterNetwork &&
-                    IsPrivateOrLocalAddress(uni.Address) &&
-                    !IPAddress.IsLoopback(uni.Address))
-                {
-                    return uni.Address.ToString();
-                }
-            }
-        }
-
-        return null;
+        var chosen = LanAdapters.Choose(LanAdapters.GetAdapters(includeAll: false), null);
+        return chosen is { CanReachLan: true } ? chosen.Address.ToString() : null;
     }
 }

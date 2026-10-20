@@ -38,13 +38,15 @@ public sealed class AppSettings
     /// <summary>Turn draw mode off once a capture taken on this PC is saved (the editor opens and needs the mouse).</summary>
     public bool ExitDrawModeOnCapture { get; set; } = true;
     /// <summary>Wipe the on-screen drawing after a capture taken on this PC, ready for the next sketch.</summary>
-    public bool ClearDrawingAfterCapture { get; set; }
+    public bool ClearDrawingAfterCapture { get; set; } = true;
     /// <summary>Leave the toolbar visible in screen grabs (it is normally hidden for the instant of the grab).</summary>
     public bool CaptureToolbarInGrabs { get; set; }
     public SketchTool LastTool { get; set; } = SketchTool.Pen;
 
     public bool RemoteEnabled { get; set; }
     public int RemotePort { get; set; } = 8787;
+    /// <summary>Network adapter the pairing QR code uses (<c>NetworkInterface.Id</c>). Empty picks the best one automatically.</summary>
+    public string RemoteAdapterId { get; set; } = string.Empty;
     public int RemoteMaxFps { get; set; } = 10;
     /// <summary>JPEG encoder quality (45–95 in UI).</summary>
     public int RemoteJpegQuality { get; set; } = 95;
