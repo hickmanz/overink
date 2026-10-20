@@ -30,6 +30,8 @@ public partial class OverlayWindow : Window
     private UIElement? _shapePreview;
     private Window? _toolbarWindow;
     private HwndSource? _hwndSource;
+    private CaptureRegionOutlineWindow? _regionOutline;
+    private Rect? _regionOutlineDips;
 
     public OverlayWindow(SketchSession session, IStrokeSource remoteStrokeSource)
     {
@@ -51,7 +53,12 @@ public partial class OverlayWindow : Window
         ShapeLayer.MouseLeftButtonUp += OnShapeMouseUp;
         Loaded += OnLoaded;
         SourceInitialized += OnSourceInitialized;
-        Closed += (_, _) => _hwndSource?.RemoveHook(HitTestHook);
+        Closed += (_, _) =>
+        {
+            _hwndSource?.RemoveHook(HitTestHook);
+            _regionOutline?.Close();
+        };
+        IsVisibleChanged += (_, _) => SyncRegionOutline();
 
         _session.Changed += ApplySession;
         _session.UndoStack.Changed += (_, _) => BumpInkRevision();
@@ -150,25 +157,31 @@ public partial class OverlayWindow : Window
 
     public void SetToolbarWindow(Window toolbarWindow) => _toolbarWindow = toolbarWindow;
 
+    /// <summary>
+    /// Shows (or clears, with null) the dashed frame around the iPad stream region. It is a separate window
+    /// excluded from screen capture, and follows this overlay's visibility.
+    /// </summary>
     public void SetCaptureRegionOutline(Rect? regionDips)
     {
-        if (regionDips is not { Width: > 0, Height: > 0 } rect)
-        {
-            CaptureRegionOutline.Visibility = Visibility.Collapsed;
-            return;
-        }
+        _regionOutlineDips = regionDips is { Width: > 0, Height: > 0 } ? regionDips : null;
+        SyncRegionOutline();
+    }
 
-        var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-        CaptureRegionOutline.HorizontalAlignment = HorizontalAlignment.Left;
-        CaptureRegionOutline.VerticalAlignment = VerticalAlignment.Top;
-        CaptureRegionOutline.Width = rect.Width;
-        CaptureRegionOutline.Height = rect.Height;
-        CaptureRegionOutline.Margin = new Thickness(
-            rect.Left - geometry.Dips.Left,
-            rect.Top - geometry.Dips.Top,
-            0,
-            0);
-        CaptureRegionOutline.Visibility = Visibility.Visible;
+    private void SyncRegionOutline()
+    {
+        if (_regionOutlineDips is { } rect && IsVisible)
+        {
+            _regionOutline ??= new CaptureRegionOutlineWindow();
+            _regionOutline.Place(rect);
+            if (!_regionOutline.IsVisible)
+            {
+                _regionOutline.Show();
+            }
+        }
+        else if (_regionOutline is { IsVisible: true })
+        {
+            _regionOutline.Hide();
+        }
     }
 
     /// <summary>

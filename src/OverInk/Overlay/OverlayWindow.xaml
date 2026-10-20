@@ -28,12 +28,5 @@
                 IsHitTestVisible="False"
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Stretch" />
-        <Rectangle x:Name="CaptureRegionOutline"
-                   Stroke="#994C8DFF"
-                   StrokeThickness="2"
-                   StrokeDashArray="6 4"
-                   Fill="Transparent"
-                   IsHitTestVisible="False"
-                   Visibility="Collapsed" />
     </Grid>
 </Window>

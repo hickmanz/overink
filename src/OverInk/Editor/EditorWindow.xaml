@@ -9,6 +9,7 @@
         MinWidth="820"
         MinHeight="520"
         Background="#FF0E0E10"
+        Topmost="True"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
         WindowStartupLocation="CenterScreen">

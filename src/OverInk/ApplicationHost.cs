@@ -5,6 +5,7 @@ using System.Windows.Media;
 using H.NotifyIcon;
 using OverInk.Editor;
 using OverInk.Input;
+using OverInk.Interop;
 using OverInk.Models;
 using OverInk.Overlay;
 using OverInk.Remote;
@@ -557,8 +558,27 @@ public sealed class ApplicationHost : IDisposable
             _editor = new EditorWindow(_captureLibrary, _session.PenColor, _session.PenThickness);
             // The screen veil sits on a topmost overlay, so it would wash out the editor; hide it while open.
             _overlay.SetEditorOpen(true);
+            // The editor is topmost so every other app stays behind it, but the (also topmost) markup overlay
+            // jumps above it whenever it is activated; push the editor back in front.
+            void KeepEditorInFront(object? sender, EventArgs e)
+            {
+                _editor?.RaiseAboveOverlay();
+                // The toolbar stays above the editor so it never gets buried under it.
+                if (_toolbar.IsVisible)
+                {
+                    var handle = new System.Windows.Interop.WindowInteropHelper(_toolbar).Handle;
+                    NativeMethods.SetWindowPos(
+                        handle,
+                        new IntPtr(-1),
+                        0, 0, 0, 0,
+                        NativeMethods.SwpNomove | NativeMethods.SwpNosize | NativeMethods.SwpNoactivate);
+                }
+            }
+
+            _overlay.Activated += KeepEditorInFront;
             _editor.Closed += (_, _) =>
             {
+                _overlay.Activated -= KeepEditorInFront;
                 _editor = null;
                 _overlay.SetEditorOpen(false);
             };
