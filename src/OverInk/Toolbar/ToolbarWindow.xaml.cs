@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -18,6 +18,8 @@ public partial class ToolbarWindow : Window
     private Point _dragStart;
     private bool _dragging;
     private bool _recordingHotkey;
+    private bool _recordingCaptureHotkey;
+    private DateTime _capturePopupClosedAt = DateTime.MinValue;
     private bool _syncingSettingsUi;
     private bool _vertical;
     private Style? _dividerStyle;
@@ -31,6 +33,8 @@ public partial class ToolbarWindow : Window
     public event EventHandler<bool>? HideToolbarWhenNotDrawingChanged;
     public event EventHandler? SetRegionRequested;
     public event EventHandler<HotkeyChangedEventArgs>? HotkeyChanged;
+    public event EventHandler<HotkeyChangedEventArgs>? CaptureHotkeyChanged;
+    public event EventHandler<bool>? AutoCopyChanged;
 
     public ToolbarWindow(SketchSession session, OverlayWindow overlay)
     {
@@ -109,6 +113,7 @@ public partial class ToolbarWindow : Window
         _syncingSettingsUi = true;
         HideToolbarWhenNotDrawingCheck.IsChecked = _session.Settings.Current.HideToolbarWhenNotDrawing;
         RemoteServerCheck.IsChecked = _session.Settings.Current.RemoteEnabled;
+        AutoCopyCheck.IsChecked = _session.Settings.Current.AutoCopyCaptures;
         _syncingSettingsUi = false;
     }
 
@@ -141,6 +146,16 @@ public partial class ToolbarWindow : Window
     {
         var settings = _session.Settings.Current;
         HotkeyDisplayText.Text = HotkeySettingsHelper.Format(settings.HotkeyModifiers, settings.HotkeyVirtualKey);
+
+        var captureBound = settings.CaptureHotkeyVirtualKey != 0;
+        var captureText = captureBound
+            ? HotkeySettingsHelper.Format(settings.CaptureHotkeyModifiers, settings.CaptureHotkeyVirtualKey)
+            : "Not set";
+        CaptureHotkeyDisplayText.Text = captureText;
+        CaptureHotkeyDisplayText.Foreground = (Brush)FindResource(captureBound ? "TextBrush" : "MutedTextBrush");
+        CapturePopupHotkeyText.Text = captureBound ? captureText : "No shortcut";
+        ClearCaptureHotkeyButton.IsEnabled = captureBound;
+        ClearCaptureHotkeyButton.Opacity = captureBound ? 1 : 0.45;
     }
 
     public void ClampToVisibleScreen()
@@ -420,6 +435,7 @@ public partial class ToolbarWindow : Window
         ColorPickerPopup.Placement = placement;
         StrokePopup.Placement = placement;
         VeilPopup.Placement = placement;
+        CapturePopup.Placement = placement;
     }
 
     private void DragBar_MouseDown(object sender, MouseButtonEventArgs e)
@@ -551,42 +567,68 @@ public partial class ToolbarWindow : Window
 
     private void CaptureMenuButton_Click(object sender, RoutedEventArgs e)
     {
-        var menu = new ContextMenu
+        if (CapturePopup.IsOpen)
         {
-            Background = (Brush)FindResource("ShellBrush"),
-            Foreground = (Brush)FindResource("TextBrush")
-        };
+            CapturePopup.IsOpen = false;
+            return;
+        }
 
-        var auto = new MenuItem
+        // Clicking the arrow while the popup is open closes it (focus loss) and then fires Click;
+        // don't pop it straight back open.
+        if ((DateTime.UtcNow - _capturePopupClosedAt).TotalMilliseconds < 250)
         {
-            Header = "Auto — active region if set, else full screen",
-            IsCheckable = true,
-            IsChecked = _session.Settings.Current.ToolbarCaptureMode == CaptureToolbarMode.Auto
-        };
-        auto.Click += (_, _) => SetCaptureMode(CaptureToolbarMode.Auto);
-        menu.Items.Add(auto);
+            return;
+        }
 
-        var full = new MenuItem
-        {
-            Header = "Full screen",
-            IsCheckable = true,
-            IsChecked = _session.Settings.Current.ToolbarCaptureMode == CaptureToolbarMode.FullScreen
-        };
-        full.Click += (_, _) => SetCaptureMode(CaptureToolbarMode.FullScreen);
-        menu.Items.Add(full);
-
-        menu.Items.Add(new Separator());
-
-        var pick = new MenuItem { Header = "Select region for this capture…" };
-        pick.Click += (_, _) =>
-            CaptureRequested?.Invoke(this, new CaptureRequestedEventArgs { Kind = CaptureRequestKind.PickRegion });
-        menu.Items.Add(pick);
-
-        menu.PlacementTarget = CaptureMenuButton;
-        menu.Placement = PlacementMode.Bottom;
-        menu.IsOpen = true;
+        RefreshCapturePopup();
+        CapturePopup.IsOpen = true;
     }
 
+    private void CapturePopup_Closed(object? sender, EventArgs e) => _capturePopupClosedAt = DateTime.UtcNow;
+
+    private void RefreshCapturePopup()
+    {
+        var settings = _session.Settings.Current;
+        var auto = settings.ToolbarCaptureMode == CaptureToolbarMode.Auto;
+        CaptureAutoCheck.Visibility = auto ? Visibility.Visible : Visibility.Hidden;
+        CaptureFullCheck.Visibility = auto ? Visibility.Hidden : Visibility.Visible;
+        _syncingSettingsUi = true;
+        CapturePopupAutoCopyCheck.IsChecked = settings.AutoCopyCaptures;
+        _syncingSettingsUi = false;
+        RefreshHotkeyDisplay();
+    }
+
+    private void CaptureMode_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string tag } && Enum.TryParse<CaptureToolbarMode>(tag, out var mode))
+        {
+            SetCaptureMode(mode);
+        }
+
+        CapturePopup.IsOpen = false;
+    }
+
+    private void CapturePickRegion_Click(object sender, RoutedEventArgs e)
+    {
+        CapturePopup.IsOpen = false;
+        CaptureRequested?.Invoke(this, new CaptureRequestedEventArgs { Kind = CaptureRequestKind.PickRegion });
+    }
+
+    private void AutoCopy_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _syncingSettingsUi || sender is not CheckBox check)
+        {
+            return;
+        }
+
+        var enabled = check.IsChecked == true;
+        // Keep the popup switch and the settings-panel switch in step.
+        _syncingSettingsUi = true;
+        AutoCopyCheck.IsChecked = enabled;
+        CapturePopupAutoCopyCheck.IsChecked = enabled;
+        _syncingSettingsUi = false;
+        AutoCopyChanged?.Invoke(this, enabled);
+    }
     private void SetCaptureMode(CaptureToolbarMode mode)
     {
         _session.Settings.Current.ToolbarCaptureMode = mode;
@@ -671,6 +713,7 @@ public partial class ToolbarWindow : Window
 
     private void RecordHotkeyButton_Click(object sender, RoutedEventArgs e)
     {
+        CancelHotkeyRecording();
         _recordingHotkey = true;
         _session.IsHotkeyCaptureActive = true;
         HotkeyHintText.Text = "Press your shortcut now… (Esc to cancel)";
@@ -685,9 +728,39 @@ public partial class ToolbarWindow : Window
         ApplyHotkey(HotkeySettingsHelper.DefaultModifiers, HotkeySettingsHelper.DefaultVirtualKey);
     }
 
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void RecordCaptureHotkeyButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!_recordingHotkey)
+        CancelHotkeyRecording();
+        _recordingCaptureHotkey = true;
+        _session.IsHotkeyCaptureActive = true;
+        CaptureHotkeyHintText.Text = "Press your shortcut now… (Esc to cancel)";
+        RecordCaptureHotkeyButton.Content = "Listening…";
+        SetStatus(string.Empty);
+        Activate();
+        Focus();
+    }
+
+    private void ClearCaptureHotkeyButton_Click(object sender, RoutedEventArgs e)
+    {
+        CancelHotkeyRecording();
+        CaptureHotkeyChanged?.Invoke(this, new HotkeyChangedEventArgs(0, 0));
+        RefreshHotkeyDisplay();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e) => HandleHotkeyKey(e);
+
+    // Windows only sends a key-UP for Print Screen, so it can never be recorded from a key-down.
+    private void Window_PreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Snapshot)
+        {
+            HandleHotkeyKey(e);
+        }
+    }
+
+    private void HandleHotkeyKey(KeyEventArgs e)
+    {
+        if (!_recordingHotkey && !_recordingCaptureHotkey)
         {
             return;
         }
@@ -700,8 +773,28 @@ public partial class ToolbarWindow : Window
             return;
         }
 
-        if (!HotkeySettingsHelper.TryCreateFromKey(e.Key, out var modifiers, out var virtualKey))
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (!HotkeySettingsHelper.TryCreateFromKey(key, out var modifiers, out var virtualKey))
         {
+            return;
+        }
+
+        var settings = _session.Settings.Current;
+        if (_recordingCaptureHotkey)
+        {
+            if (modifiers == settings.HotkeyModifiers && virtualKey == settings.HotkeyVirtualKey)
+            {
+                CaptureHotkeyHintText.Text = "That's already the draw shortcut — pick another.";
+                return;
+            }
+
+            ApplyCaptureHotkey(modifiers, virtualKey);
+            return;
+        }
+
+        if (modifiers == settings.CaptureHotkeyModifiers && virtualKey == settings.CaptureHotkeyVirtualKey)
+        {
+            HotkeyHintText.Text = "That's already the capture shortcut — pick another.";
             return;
         }
 
@@ -718,12 +811,25 @@ public partial class ToolbarWindow : Window
         RefreshHotkeyDisplay();
     }
 
+    private void ApplyCaptureHotkey(uint modifiers, uint virtualKey)
+    {
+        _recordingCaptureHotkey = false;
+        _session.IsHotkeyCaptureActive = false;
+        RecordCaptureHotkeyButton.Content = "Set shortcut";
+        CaptureHotkeyHintText.Text = "Ctrl/Alt/Shift/Win + a key, or Print Screen / an F-key on its own";
+        CaptureHotkeyChanged?.Invoke(this, new HotkeyChangedEventArgs(modifiers, virtualKey));
+        RefreshHotkeyDisplay();
+    }
+
     private void CancelHotkeyRecording()
     {
         _recordingHotkey = false;
+        _recordingCaptureHotkey = false;
         _session.IsHotkeyCaptureActive = false;
         RecordHotkeyButton.Content = "Change";
         HotkeyHintText.Text = "Esc turns draw off · Ctrl+Z undo while draw is on";
+        RecordCaptureHotkeyButton.Content = "Set shortcut";
+        CaptureHotkeyHintText.Text = "Ctrl/Alt/Shift/Win + a key, or Print Screen / an F-key on its own";
     }
 }
 

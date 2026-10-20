@@ -12,7 +12,8 @@
         Background="Transparent"
         ShowInTaskbar="False"
         Topmost="True"
-        PreviewKeyDown="Window_PreviewKeyDown">
+        PreviewKeyDown="Window_PreviewKeyDown"
+        PreviewKeyUp="Window_PreviewKeyUp">
     <Border Style="{StaticResource ToolbarShadowHost}" Margin="10">
         <Border Style="{StaticResource ToolbarShell}">
             <StackPanel x:Name="RootStack">
@@ -248,7 +249,101 @@
                                 </Button>
                             </StackPanel>
                         </Border>
-                        <Button x:Name="EditorButton" Style="{StaticResource DockButton}" Margin="5,1,1,1"
+                        <!-- Capture options -->
+                        <Popup x:Name="CapturePopup" PlacementTarget="{Binding ElementName=CaptureSplit}"
+                               Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"
+                               Closed="CapturePopup_Closed">
+                            <Border Style="{StaticResource PopoverCard}" Padding="8">
+                                <StackPanel Width="296">
+                                    <TextBlock Text="CAPTURE" Style="{StaticResource SectionLabel}" Margin="8,6,0,8" />
+
+                                    <Button Style="{StaticResource MenuRow}" Tag="Auto" Click="CaptureMode_Click">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Width="34" Height="34" CornerRadius="10" Background="#14FFFFFF" Margin="0,0,12,0">
+                                                <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconScan}"
+                                                                Foreground="#FFE0E0E6" />
+                                            </Border>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="Auto" Style="{StaticResource RowTitle}" />
+                                                <TextBlock Text="Active region if you set one, otherwise the full screen"
+                                                           Style="{StaticResource RowDesc}" />
+                                            </StackPanel>
+                                            <ContentControl x:Name="CaptureAutoCheck" Grid.Column="2" Style="{StaticResource LucideIcon}"
+                                                            Tag="{StaticResource IconCheck}" Width="16" Height="16" Margin="8,0,2,0"
+                                                            Foreground="{StaticResource AccentBrush}" />
+                                        </Grid>
+                                    </Button>
+
+                                    <Button Style="{StaticResource MenuRow}" Tag="FullScreen" Click="CaptureMode_Click">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Width="34" Height="34" CornerRadius="10" Background="#14FFFFFF" Margin="0,0,12,0">
+                                                <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconMonitor}"
+                                                                Foreground="#FFE0E0E6" />
+                                            </Border>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="Full screen" Style="{StaticResource RowTitle}" />
+                                                <TextBlock Text="Always the whole display" Style="{StaticResource RowDesc}" />
+                                            </StackPanel>
+                                            <ContentControl x:Name="CaptureFullCheck" Grid.Column="2" Style="{StaticResource LucideIcon}"
+                                                            Tag="{StaticResource IconCheck}" Width="16" Height="16" Margin="8,0,2,0"
+                                                            Foreground="{StaticResource AccentBrush}" />
+                                        </Grid>
+                                    </Button>
+
+                                    <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="8,6" />
+
+                                    <Button Style="{StaticResource MenuRow}" Click="CapturePickRegion_Click">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Width="34" Height="34" CornerRadius="10" Background="#144C8DFF" Margin="0,0,12,0">
+                                                <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconCrop}"
+                                                                Foreground="{StaticResource AccentBrush}" />
+                                            </Border>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="Select region…" Style="{StaticResource RowTitle}" />
+                                                <TextBlock Text="Drag out an area for this capture" Style="{StaticResource RowDesc}" />
+                                            </StackPanel>
+                                            <Border Grid.Column="2" Style="{StaticResource Keycap}" Margin="8,0,2,0" Padding="7,2"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock x:Name="CapturePopupHotkeyText" FontFamily="Consolas" FontSize="11"
+                                                           Foreground="{StaticResource MutedTextBrush}" />
+                                            </Border>
+                                        </Grid>
+                                    </Button>
+
+                                    <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="8,6" />
+
+                                    <Grid Margin="8,6,8,4" ToolTip="Puts each capture on the clipboard (image and file) the moment it is taken">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="Copy to clipboard" Style="{StaticResource RowTitle}" />
+                                            <TextBlock Text="Automatically after every capture" Style="{StaticResource RowDesc}" />
+                                        </StackPanel>
+                                        <CheckBox x:Name="CapturePopupAutoCopyCheck" Grid.Column="1" Margin="12,0,0,0"
+                                                  Style="{StaticResource SwitchCheckBox}"
+                                                  AutomationProperties.Name="Copy captures to the clipboard automatically"
+                                                  Checked="AutoCopy_Changed" Unchecked="AutoCopy_Changed" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </Popup>                        <Button x:Name="EditorButton" Style="{StaticResource DockButton}" Margin="5,1,1,1"
                                 ToolTip="Open editor / capture library" Click="OpenEditor_Click">
                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconImages}" />
                         </Button>
@@ -317,6 +412,47 @@
                                 <TextBlock x:Name="HotkeyHintText" Style="{StaticResource RowDesc}" Margin="0,8,0,0"
                                            Text="Esc turns draw off · Ctrl+Z undo while draw is on" />
 
+                                <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Region capture shortcut" Style="{StaticResource RowTitle}" />
+                                        <TextBlock Text="Drag out an area and capture it from anywhere" Style="{StaticResource RowDesc}" />
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Style="{StaticResource Keycap}" Margin="12,0,0,0">
+                                        <TextBlock x:Name="CaptureHotkeyDisplayText" Foreground="{StaticResource TextBrush}"
+                                                   FontFamily="Consolas" FontSize="12.5" />
+                                    </Border>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <Button x:Name="RecordCaptureHotkeyButton" Style="{StaticResource SettingsAction}" Content="Set shortcut"
+                                            MinWidth="76" Click="RecordCaptureHotkeyButton_Click" />
+                                    <Button x:Name="ClearCaptureHotkeyButton" Style="{StaticResource SettingsAction}" Content="Clear"
+                                            MinWidth="64" Click="ClearCaptureHotkeyButton_Click" />
+                                </StackPanel>
+                                <TextBlock x:Name="CaptureHotkeyHintText" Style="{StaticResource RowDesc}" Margin="0,8,0,0"
+                                           Text="Ctrl/Alt/Shift/Win + a key, or Print Screen / an F-key on its own" />
+
+                                <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
+
+                                <Grid ToolTip="Puts each capture on the clipboard (image and file) the moment it is taken">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Copy captures to clipboard" Style="{StaticResource RowTitle}" />
+                                        <TextBlock Text="Automatically after every capture on this PC" Style="{StaticResource RowDesc}" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="AutoCopyCheck" Grid.Column="1" Margin="12,0,0,0"
+                                              Style="{StaticResource SwitchCheckBox}"
+                                              AutomationProperties.Name="Copy captures to the clipboard automatically"
+                                              Checked="AutoCopy_Changed" Unchecked="AutoCopy_Changed" />
+                                </Grid>
                                 <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
 
                                 <Grid ToolTip="Pass-through hides the toolbar until you turn draw mode on (shortcut still works)">

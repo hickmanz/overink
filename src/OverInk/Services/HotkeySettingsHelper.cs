@@ -32,7 +32,7 @@ public static class HotkeySettingsHelper
         }
 
         var key = KeyInterop.KeyFromVirtualKey((int)virtualKey);
-        parts.Add(key == Key.None ? $"0x{virtualKey:X}" : key.ToString());
+        parts.Add(key == Key.None ? $"0x{virtualKey:X}" : KeyName(key));
         return string.Join(" + ", parts);
     }
 
@@ -62,6 +62,16 @@ public static class HotkeySettingsHelper
         return modifiers;
     }
 
+    /// <summary>Keys safe to bind without a modifier because they are never used for typing.</summary>
+    public static bool IsStandaloneKey(Key key) =>
+        key is Key.Snapshot or Key.Pause or Key.Scroll || key is >= Key.F1 and <= Key.F24;
+
+    private static string KeyName(Key key) => key switch
+    {
+        Key.Snapshot => "Print Screen",
+        Key.Scroll => "Scroll Lock",
+        _ => key.ToString()
+    };
     public static bool IsModifierKey(Key key) =>
         key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
             or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin or Key.System;
@@ -76,6 +86,7 @@ public static class HotkeySettingsHelper
             return false;
         }
 
-        return modifiers != 0;
+        // Keys that never type anything may be bound on their own (Print Screen, F-keys, ...).
+        return modifiers != 0 || IsStandaloneKey(key);
     }
 }

@@ -75,6 +75,12 @@ public sealed class ApplicationHost : IDisposable
         _toolbar.HideRequested += (_, _) => SetVisible(false);
         _toolbar.OpenEditorRequested += (_, _) => ShowEditor();
         _toolbar.HotkeyChanged += (_, args) => ApplyHotkey(args.Modifiers, args.VirtualKey);
+        _toolbar.CaptureHotkeyChanged += (_, args) => ApplyCaptureHotkey(args.Modifiers, args.VirtualKey);
+        _toolbar.AutoCopyChanged += (_, enabled) =>
+        {
+            _settings.Current.AutoCopyCaptures = enabled;
+            _settings.Save();
+        };
         _toolbar.RemoteServerEnabledChanged += async (_, enabled) => await SetRemoteServerAsync(enabled);
         _toolbar.HideToolbarWhenNotDrawingChanged += (_, enabled) =>
         {
@@ -97,7 +103,16 @@ public sealed class ApplicationHost : IDisposable
             var handle = new WindowInteropHelper(_toolbar).Handle;
             _hotkeyService.Attach(handle);
             ApplyHotkey(_settings.Current.HotkeyModifiers, _settings.Current.HotkeyVirtualKey, quiet: true);
+            if (!_hotkeyService.RegisterCapture(
+                    _settings.Current.CaptureHotkeyModifiers, _settings.Current.CaptureHotkeyVirtualKey))
+            {
+                _toolbar.SetStatus("The capture shortcut is already used by another app — set a different one in Settings.");
+            }
         };
+
+        _hotkeyService.CaptureRegionRequested += (_, _) =>
+            // Leave the WM_HOTKEY handler before opening the (modal) region picker.
+            Application.Current.Dispatcher.BeginInvoke(new Action(CaptureRegionFromHotkey));
 
         _hotkeyService.ToggleDrawRequested += (_, _) =>
         {
@@ -298,13 +313,71 @@ public sealed class ApplicationHost : IDisposable
         }).Task;
     }
 
+    private bool _capturing;
+    private bool _lastCaptureCopied;
+
     private void CaptureToEditor(CaptureRequestKind kind = CaptureRequestKind.Default)
     {
-        var item = CaptureToLibrary(kind);
-        if (item is not null)
+        if (_capturing)
         {
-            OpenEditor(item);
+            return;
         }
+
+        _capturing = true;
+        try
+        {
+            var item = CaptureToLibrary(kind);
+            if (item is not null)
+            {
+                OpenEditor(item);
+                if (_lastCaptureCopied)
+                {
+                    _editor?.NotifyCopied();
+                }
+            }
+        }
+        finally
+        {
+            _capturing = false;
+        }
+    }
+
+    /// <summary>The global region-capture shortcut: drag an area, capture it, and open it in the editor.</summary>
+    private void CaptureRegionFromHotkey() => CaptureToEditor(CaptureRequestKind.PickRegion);
+
+    /// <summary>Puts the capture on the clipboard (image + file) when "auto-copy" is on. Never throws.</summary>
+    private void AutoCopyToClipboard(BitmapSource bitmap, StrokeCollection ink, CaptureItem item)
+    {
+        _lastCaptureCopied = false;
+        if (!_settings.Current.AutoCopyCaptures)
+        {
+            return;
+        }
+
+        try
+        {
+            var flattened = ink.Count == 0 ? bitmap : CaptureRenderer.Flatten(bitmap, ink);
+            ImageTransfer.SetClipboardWithRetry(ImageTransfer.BuildDataObject(flattened, item.FlattenedPath));
+            _lastCaptureCopied = true;
+        }
+        catch (Exception ex)
+        {
+            RemoteDebugLog.Write($"auto-copy failed: {ex.Message}");
+        }
+    }
+
+    private void ApplyCaptureHotkey(uint modifiers, uint virtualKey)
+    {
+        _settings.Current.CaptureHotkeyModifiers = modifiers;
+        _settings.Current.CaptureHotkeyVirtualKey = virtualKey;
+        _settings.Save();
+
+        if (!_hotkeyService.RegisterCapture(modifiers, virtualKey))
+        {
+            _toolbar.SetStatus("That shortcut is in use — pick another.");
+        }
+
+        _toolbar.RefreshHotkeyDisplay();
     }
 
     /// <summary>Captures the screen into the library without opening the editor. Null when cancelled.</summary>
@@ -317,7 +390,9 @@ public sealed class ApplicationHost : IDisposable
         }
 
         var (bitmap, ink) = CaptureScreenWithInk(pixelBounds, geometry);
-        return _captureLibrary.CreateFromCapture(bitmap, ink);
+        var item = _captureLibrary.CreateFromCapture(bitmap, ink);
+        AutoCopyToClipboard(bitmap, ink, item);
+        return item;
     }
 
     /// <summary>
@@ -394,10 +469,12 @@ public sealed class ApplicationHost : IDisposable
         if (kind == CaptureRequestKind.PickRegion)
         {
             _captureRegionChrome?.Hide();
-            var picker = new RegionPickerWindow("Drag capture area · Esc cancel")
+            var picker = new RegionPickerWindow("Click a window or drag an area · Esc cancel");
+            // A hidden toolbar (auto-hide, or the shortcut used while not drawing) can't own a visible window.
+            if (_toolbar.IsVisible)
             {
-                Owner = _toolbar
-            };
+                picker.Owner = _toolbar;
+            }
 
             if (picker.ShowDialog() != true || picker.SelectedDipsRect is not { } dipRect)
             {
@@ -584,7 +661,7 @@ public sealed class ApplicationHost : IDisposable
     private void BeginCaptureRegionPick()
     {
         _captureRegionChrome?.Hide();
-        var picker = new RegionPickerWindow("Drag remote stream region · Esc cancel")
+        var picker = new RegionPickerWindow("Click a window or drag the stream region · Esc cancel")
         {
             Owner = _toolbar
         };

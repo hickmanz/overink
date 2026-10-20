@@ -20,6 +20,11 @@ public sealed class AppSettings
     public bool HideToolbarWhenNotDrawing { get; set; }
     public uint HotkeyModifiers { get; set; } = NativeMethodsDefaults.DefaultHotkeyModifiers;
     public uint HotkeyVirtualKey { get; set; } = 0x44; // D
+    /// <summary>Global shortcut that starts a region capture. A virtual key of 0 means not bound.</summary>
+    public uint CaptureHotkeyModifiers { get; set; }
+    public uint CaptureHotkeyVirtualKey { get; set; }
+    /// <summary>Copy every capture taken on this PC to the clipboard as soon as it is saved.</summary>
+    public bool AutoCopyCaptures { get; set; }
     public SketchTool LastTool { get; set; } = SketchTool.Pen;
 
     public bool RemoteEnabled { get; set; }

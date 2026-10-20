@@ -13,8 +13,13 @@
         <Rectangle x:Name="DimLeft" Fill="#99000000" IsHitTestVisible="False" />
         <Rectangle x:Name="DimRight" Fill="#99000000" IsHitTestVisible="False" />
         <Rectangle x:Name="DimBottom" Fill="#99000000" IsHitTestVisible="False" />
+        <!-- Alpha 1 (not 0): fully transparent pixels of a layered window let clicks fall through to the app below. -->
         <Rectangle x:Name="SelectionFill" Stroke="#FF4C8DFF" StrokeThickness="2"
-                   Fill="#224C8DFF" StrokeDashArray="4 3" Visibility="Collapsed" IsHitTestVisible="False" />
+                   Fill="#01000000" Visibility="Collapsed" IsHitTestVisible="False" />
+        <Border x:Name="SizeBadge" Background="#E6111114" CornerRadius="6" Padding="8,3"
+                BorderBrush="#33FFFFFF" BorderThickness="1" Visibility="Collapsed" IsHitTestVisible="False">
+            <TextBlock x:Name="SizeText" Foreground="White" FontSize="12" />
+        </Border>
         <Border x:Name="HintBar" Background="#DD111114" CornerRadius="8" Padding="14,8"
                 BorderBrush="#44FFFFFF" BorderThickness="1" IsHitTestVisible="False">
             <TextBlock x:Name="HintText" Text="Drag to select region · Esc cancel" Foreground="White" FontSize="13" />

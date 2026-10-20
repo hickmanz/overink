@@ -135,6 +135,13 @@ public static class ShapeDrawingHelper
             return;
         }
 
+        if (element is Rectangle or Ellipse)
+        {
+            var shape = (FrameworkElement)element;
+            shape.Width = Math.Max(1, rect.Width);
+            shape.Height = Math.Max(1, rect.Height);
+        }
+
         Canvas.SetLeft(element, rect.Left);
         Canvas.SetTop(element, rect.Top);
     }
