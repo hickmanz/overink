@@ -18,6 +18,9 @@ namespace OverInk;
 public sealed class ApplicationHost : IDisposable
 {
     private readonly SettingsService _settings = new();
+    private readonly UpdateService _updates = new();
+    private bool _updateCheckRunning;
+    private bool _disposed;
     private readonly SketchSession _session;
     private readonly RemoteStrokeSource _strokeSource = new();
     private readonly PairingService _pairing;
@@ -44,6 +47,9 @@ public sealed class ApplicationHost : IDisposable
         _pairing = new PairingService(_settings);
         _overlay = new OverlayWindow(_session, _strokeSource);
         _toolbar = new ToolbarWindow(_session, _overlay);
+        InstallerCloseHook.Watch(_toolbar);
+        InstallerCloseHook.Watch(_overlay);
+        _toolbar.CheckForUpdatesRequested += (_, _) => _ = CheckForUpdatesAsync(userInitiated: true);
         // Make the toolbar an owned window of the overlay: Windows keeps an owned window above its owner
         // in the Z-order no matter which one is active, so the screen veil can never cover the toolbar.
         new WindowInteropHelper(_toolbar).Owner = new WindowInteropHelper(_overlay).EnsureHandle();
@@ -137,6 +143,8 @@ public sealed class ApplicationHost : IDisposable
         {
             _ = StartRemoteAsync();
         }
+
+        _ = CheckForUpdatesOnStartupAsync();
     }
 
     private TaskbarIcon CreateTrayIcon()
@@ -778,8 +786,173 @@ public sealed class ApplicationHost : IDisposable
     private string BuildTrayTooltip() =>
         $"OverInk — {HotkeySettingsHelper.Format(_settings.Current.HotkeyModifiers, _settings.Current.HotkeyVirtualKey)} toggles draw / pass-through";
 
+    private async Task CheckForUpdatesOnStartupAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            await Application.Current.Dispatcher.InvokeAsync(async () =>
+            {
+                if (_disposed || _updateCheckRunning)
+                {
+                    return;
+                }
+
+                await CheckForUpdatesAsync(userInitiated: false);
+            }).Task.Unwrap();
+        }
+        catch (Exception)
+        {
+            // A failed background check stays quiet; Check now reports the error.
+        }
+    }
+
+    private async Task CheckForUpdatesAsync(bool userInitiated)
+    {
+        if (_updateCheckRunning || _disposed)
+        {
+            return;
+        }
+
+        _updateCheckRunning = true;
+        _toolbar.SetUpdateCheckBusy(true);
+        var launched = false;
+        try
+        {
+            var result = await _updates.CheckAsync();
+            if (_disposed)
+            {
+                return;
+            }
+
+            if (result.ReachedServer)
+            {
+                _settings.Current.LastUpdateCheckUtc = DateTime.UtcNow;
+                _settings.Save();
+            }
+
+            _toolbar.RefreshUpdateDetails();
+            // A quiet startup check shouldn't surface a network blip. Check now still reports it.
+            if (result.Status == UpdateCheckStatus.Failed && !userInitiated && !result.ReachedServer)
+            {
+                return;
+            }
+
+            _toolbar.SetUpdateStatus(result.Message, result.Status == UpdateCheckStatus.Failed);
+
+            if (result.Offer is not { } offer || result.Status != UpdateCheckStatus.UpdateAvailable)
+            {
+                return;
+            }
+
+            var skipped = !userInitiated && _settings.Current.SkippedUpdateVersion == offer.Version;
+            if (skipped)
+            {
+                return;
+            }
+
+            if (result.CanInstall)
+            {
+                var install = Ask(
+                    $"OverInk {offer.Version} is available. You're running {AppVersion.Current}.\n\nOverInk will close, install the update, and reopen. If Windows asks, choose Run anyway or Yes.",
+                    "Update now",
+                    "Not now");
+                if (!install)
+                {
+                    _settings.Current.SkippedUpdateVersion = offer.Version;
+                    _settings.Save();
+                    return;
+                }
+
+                launched = await InstallUpdateAsync(offer);
+            }
+            else if (userInitiated)
+            {
+                var open = Ask(
+                    $"OverInk {offer.Version} is available. You're running {AppVersion.Current}.\n\nThis copy wasn't installed with OverInk Setup, so it can't update itself.",
+                    "Open releases",
+                    "Not now");
+                if (open)
+                {
+                    UpdateService.OpenReleasesPage();
+                }
+            }
+        }
+        finally
+        {
+            if (!_disposed && !launched)
+            {
+                _updateCheckRunning = false;
+                _toolbar.SetUpdateCheckBusy(false);
+            }
+        }
+    }
+
+    private async Task<bool> InstallUpdateAsync(UpdateOffer offer)
+    {
+        try
+        {
+            _toolbar.SetUpdateCheckBusy(true, "Downloading…");
+            _toolbar.SetUpdateStatus("Downloading update…");
+            var setupPath = await _updates.DownloadVerifiedInstallerAsync(offer);
+            if (_disposed)
+            {
+                return false;
+            }
+
+            UpdateService.LaunchInstaller(setupPath);
+            _toolbar.SetUpdateCheckBusy(true, "Installing…");
+            _toolbar.SetUpdateStatus("Installing… OverInk will reopen when it finishes.");
+            _ = ReenableUpdateButtonIfStillRunningAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _toolbar.SetUpdateStatus(ex.Message, isError: true);
+            Ask(ex.Message, "OK", null);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The installer is supposed to close this process. If it never does, leave Check now usable again.
+    /// </summary>
+    private async Task ReenableUpdateButtonIfStillRunningAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(45)).ConfigureAwait(false);
+        var app = Application.Current;
+        if (_disposed || app == null)
+        {
+            return;
+        }
+
+        await app.Dispatcher.InvokeAsync(() =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _updateCheckRunning = false;
+            _toolbar.SetUpdateCheckBusy(false);
+            _toolbar.SetUpdateStatus("The installer didn't finish. You can try again.", isError: true);
+        });
+    }
+
+    private bool Ask(string message, string confirm, string? cancel)
+    {
+        var dialog = new UpdatePromptWindow(message, confirm, cancel)
+        {
+            Owner = _overlay,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen
+        };
+        return dialog.ShowDialog() == true;
+    }
+
     public void Dispose()
     {
+        _disposed = true;
+        _updates.Dispose();
         _captureRegionChrome?.Close();
         _editor?.Close();
         _captureLibrary.Dispose();

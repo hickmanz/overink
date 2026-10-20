@@ -17,6 +17,10 @@ public sealed class AppSettings
     /// <summary>Opacity (0 – 0.6) of the white veil laid over the screen, under the ink, while drawing. 0 = off.</summary>
     public double ScreenVeilOpacity { get; set; }
     public bool RunAtStartup { get; set; }
+    /// <summary>UTC time of the last update check that reached GitHub. Null until the first successful check.</summary>
+    public DateTime? LastUpdateCheckUtc { get; set; }
+    /// <summary>Release version the user chose "Not now" for. A newer tag still prompts.</summary>
+    public string SkippedUpdateVersion { get; set; } = "";
     public bool HideToolbarWhenNotDrawing { get; set; }
     public uint HotkeyModifiers { get; set; } = NativeMethodsDefaults.DefaultHotkeyModifiers;
     public uint HotkeyVirtualKey { get; set; } = 0x44; // D

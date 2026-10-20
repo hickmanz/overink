@@ -16,6 +16,9 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Inno's silent upgrade asks Windows to end this process. OnExplicitShutdown would otherwise ignore that.
+        SessionEnding += (_, _) => Shutdown();
+
         var wantsEditor = e.Args.Any(a => string.Equals(a, EditorArgument, StringComparison.OrdinalIgnoreCase));
 
         _singleInstanceMutex = new Mutex(true, MutexName, out var created);

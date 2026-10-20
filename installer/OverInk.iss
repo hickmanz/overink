@@ -35,6 +35,8 @@ WizardStyle=modern
 ; Matches the single-instance mutex in App.xaml.cs so setup closes a running copy before upgrading.
 AppMutex=OverInk_SingleInstance_2026
 CloseApplications=yes
+; The in-app updater launches setup with /VERYSILENT and then this process has already been asked to exit.
+; Relaunch is the silent [Run] entry below, so Restart Manager must not start a second copy.
 RestartApplications=no
 
 [Languages]
@@ -54,3 +56,5 @@ Name: "{autodesktop}\OverInk"; Filename: "{app}\OverInk.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\OverInk.exe"; Description: "Launch OverInk"; Flags: nowait postinstall skipifsilent
+; Silent upgrades have no "Launch OverInk" checkbox, so start the new copy when setup finishes.
+Filename: "{app}\OverInk.exe"; Flags: nowait postinstall skipifnotsilent

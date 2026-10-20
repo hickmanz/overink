@@ -35,6 +35,7 @@ public partial class ToolbarWindow : Window
     public event EventHandler<HotkeyChangedEventArgs>? HotkeyChanged;
     public event EventHandler<HotkeyChangedEventArgs>? CaptureHotkeyChanged;
     public event EventHandler<bool>? AutoCopyChanged;
+    public event EventHandler? CheckForUpdatesRequested;
 
     public ToolbarWindow(SketchSession session, OverlayWindow overlay)
     {
@@ -44,6 +45,8 @@ public partial class ToolbarWindow : Window
         BrandLogo.Source = BrandIcons.CreateToolbarImage(22);
         BuildColorSwatches();
         ColorPicker.SetColor(session.PenColor);
+
+        RefreshUpdateDetails();
 
         Left = session.Settings.Current.ToolbarLeft;
         Top = session.Settings.Current.ToolbarTop;
@@ -88,6 +91,7 @@ public partial class ToolbarWindow : Window
     {
         SettingsPanel.Visibility = Visibility.Visible;
         RefreshHotkeyDisplay();
+        RefreshUpdateDetails();
         SyncSettingsCheckboxes();
         StreamSettings.Bind(_session.Settings);
         StreamSettings.RefreshSummary();
@@ -691,6 +695,34 @@ public partial class ToolbarWindow : Window
         HideToolbarWhenNotDrawingChanged?.Invoke(this, HideToolbarWhenNotDrawingCheck.IsChecked == true);
     }
 
+    public void RefreshUpdateDetails()
+    {
+        CurrentVersionText.Text = AppVersion.Current;
+        LastCheckedText.Text = AppVersion.FormatLastChecked(_session.Settings.Current.LastUpdateCheckUtc);
+    }
+
+    public void SetUpdateCheckBusy(bool busy, string buttonText = "Checking…")
+    {
+        CheckForUpdatesButton.IsEnabled = !busy;
+        CheckForUpdatesButton.Opacity = busy ? 0.55 : 1;
+        CheckForUpdatesButton.Content = busy ? buttonText : "Check now";
+    }
+
+    public void SetUpdateStatus(string? text, bool isError = false)
+    {
+        var show = !string.IsNullOrWhiteSpace(text);
+        UpdateStatusText.Text = text ?? "";
+        UpdateStatusText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        UpdateStatusText.Foreground = isError
+            ? new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73))
+            : (Brush)FindResource("MutedTextBrush");
+    }
+
+    private void CheckForUpdatesButton_Click(object sender, RoutedEventArgs e)
+    {
+        CheckForUpdatesRequested?.Invoke(this, EventArgs.Empty);
+    }
+
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
         var opening = SettingsPanel.Visibility != Visibility.Visible;
@@ -698,6 +730,7 @@ public partial class ToolbarWindow : Window
         if (opening)
         {
             RefreshHotkeyDisplay();
+            RefreshUpdateDetails();
             SyncSettingsCheckboxes();
             StreamSettings.Bind(_session.Settings);
             StreamSettings.RefreshSummary();
