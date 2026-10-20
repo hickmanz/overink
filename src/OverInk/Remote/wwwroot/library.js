@@ -64,11 +64,11 @@ export function createLibraryApi(getToken) {
     },
     /** `strokesJson` is the strokes array already serialized (cached per stroke by the caller), so a save of a big
      *  capture doesn't re-stringify every point on the main thread while the pen is down. */
-    async save(id, baseRev, strokesJson) {
+    async save(id, baseRev, strokesJson, veil = 0) {
       const res = await request(`/lib/${enc(id)}/strokes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: `{"baseRev":${JSON.stringify(baseRev)},"strokes":${strokesJson}}`
+        body: `{"baseRev":${JSON.stringify(baseRev)},"veil":${Number(veil) || 0},"strokes":${strokesJson}}`
       });
       return res.json();
     },

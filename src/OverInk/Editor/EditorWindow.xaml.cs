@@ -11,6 +11,7 @@ using Microsoft.Win32;
 using OverInk.Models;
 using OverInk.Overlay;
 using OverInk.Services;
+using OverInk.Toolbar;
 
 namespace OverInk.Editor;
 
@@ -25,6 +26,7 @@ public partial class EditorWindow : Window
 
     private readonly CaptureLibrary _library;
     private readonly double _penThickness;
+    private readonly CustomColorPalette _customColors;
     private readonly List<CaptureTrayEntry> _trayEntries = new();
 
     private CaptureItem? _currentItem;
@@ -32,6 +34,11 @@ public partial class EditorWindow : Window
     private string? _loadedRevision;
     private BitmapSource _originalSource = null!;
     private bool _isDirty;
+    private double _veil;
+    private bool _settingVeilUi;
+    private double _veilBeforeEdit;
+    private bool _veilEditPending;
+    private readonly System.Windows.Threading.DispatcherTimer _veilHistoryTimer;
     private bool _loadingDocument;
     private bool _suppressLibrarySelection;
     private ZoomMode _zoomMode = ZoomMode.Fit;
@@ -56,12 +63,17 @@ public partial class EditorWindow : Window
     private Point _shapeStart;
     private UIElement? _shapePreview;
 
-    public EditorWindow(CaptureLibrary library, Color penColor, double penThickness)
+    public EditorWindow(CaptureLibrary library, Color penColor, double penThickness, CustomColorPalette customColors)
     {
         _library = library;
+        _customColors = customColors;
         _penThickness = penThickness;
         _penColor = penColor;
         InitializeComponent();
+
+        // A slider drag is one undo step: commit it once the value has stopped changing.
+        _veilHistoryTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _veilHistoryTimer.Tick += (_, _) => FlushVeilHistory();
 
         // Open large: ~90% of the usable screen (never below the minimums), centered.
         var work = SystemParameters.WorkArea;
@@ -85,6 +97,10 @@ public partial class EditorWindow : Window
             ApplyPenColor(color);
             UpdateSwatchSelection();
         };
+        EditorColorPicker.SaveRequested += (_, color) => _customColors.Add(color);
+        // Colors saved or removed in the toolbar show up here too (the palette outlives this window).
+        _customColors.Changed += CustomColors_Changed;
+        Closed += (_, _) => _customColors.Changed -= CustomColors_Changed;
         PenSizeSlider.Value = penThickness;
         BuildPresetSwatches();
         UpdateSwatchSelection();
@@ -215,6 +231,9 @@ public partial class EditorWindow : Window
         _loadedRevision = _library.GetRevision(item);
         _originalSource = original;
         BackgroundImage.Source = original;
+        _veilHistoryTimer.Stop();
+        _veilEditPending = false;
+        SetVeil(_library.LoadVeil(item));
         InkSurface.Strokes.Clear();
         foreach (var stroke in strokes)
         {
@@ -270,32 +289,54 @@ public partial class EditorWindow : Window
         ShapeCanvas.Height = h;
     }
 
+    /// <summary>Presets first, then the colors the user saved from the wheel (right-click one to remove it).</summary>
     private void BuildPresetSwatches()
     {
         PresetSwatchesPanel.Children.Clear();
         foreach (var hex in PresetPalette.HexColors)
         {
-            if (!PresetPalette.TryParseHex(hex, out var color))
-            {
-                continue;
-            }
-
-            var swatch = new ToggleButton
-            {
-                Style = (Style)FindResource("GridSwatch"),
-                Background = new SolidColorBrush(color),
-                Margin = new Thickness(1),
-                Tag = hex,
-                ToolTip = hex
-            };
-            swatch.Click += (_, _) =>
-            {
-                EditorColorPicker.SetColor(color);
-                ApplyPenColor(color);
-                UpdateSwatchSelection();
-            };
-            PresetSwatchesPanel.Children.Add(swatch);
+            AddSwatch(hex, saved: false);
         }
+
+        foreach (var hex in _customColors.Colors)
+        {
+            AddSwatch(hex, saved: true);
+        }
+    }
+
+    private void AddSwatch(string hex, bool saved)
+    {
+        if (!PresetPalette.TryParseHex(hex, out var color))
+        {
+            return;
+        }
+
+        var swatch = new ToggleButton
+        {
+            Style = (Style)FindResource("GridSwatch"),
+            Background = new SolidColorBrush(color),
+            Margin = new Thickness(1),
+            Tag = hex,
+            ToolTip = saved ? $"{hex} (right-click to remove)" : hex
+        };
+        swatch.Click += (_, _) =>
+        {
+            EditorColorPicker.SetColor(color);
+            ApplyPenColor(color);
+            UpdateSwatchSelection();
+        };
+        if (saved)
+        {
+            CustomSwatchMenu.Attach(swatch, () => _customColors.Remove(hex));
+        }
+
+        PresetSwatchesPanel.Children.Add(swatch);
+    }
+
+    private void CustomColors_Changed()
+    {
+        BuildPresetSwatches();
+        UpdateSwatchSelection();
     }
 
     /// <summary>Marks the swatch matching the pen colour; the wheel button takes over for custom colours.</summary>
@@ -311,7 +352,9 @@ public partial class EditorWindow : Window
         }
 
         CustomColorButton.Background = new SolidColorBrush(_penColor);
-        CustomColorButton.IsChecked = !PresetPalette.IsPreset(_penColor);
+        var hasSwatch = _customColors.HasSwatch(_penColor);
+        CustomColorButton.IsChecked = !hasSwatch;
+        EditorColorPicker.SetCanSave(!hasSwatch);
         UpdatePenVisuals();
     }
 
@@ -678,8 +721,68 @@ public partial class EditorWindow : Window
 
     private void Redo_Click(object sender, RoutedEventArgs e) => Redo();
 
+    // ----- Screen veil -----
+
+    private void VeilSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_settingVeilUi || _currentItem is null || _loadingDocument)
+        {
+            return;
+        }
+
+        if (!_veilEditPending)
+        {
+            _veilEditPending = true;
+            _veilBeforeEdit = _veil;
+        }
+
+        SetVeil(e.NewValue / 100.0, updateSlider: false);
+        MarkDirty();
+        _veilHistoryTimer.Stop();
+        _veilHistoryTimer.Start();
+    }
+
+    /// <summary>Shows the veil on the canvas and keeps the slider and label in step with it.</summary>
+    private void SetVeil(double veil, bool updateSlider = true)
+    {
+        _veil = Math.Clamp(veil, 0, CaptureLibrary.MaxVeil);
+        VeilLayer.Opacity = _veil;
+        var percent = (int)Math.Round(_veil * 100);
+        VeilValue.Text = percent == 0 ? "Off" : $"{percent}%";
+
+        if (updateSlider)
+        {
+            _settingVeilUi = true;
+            VeilSlider.Value = percent;
+            _settingVeilUi = false;
+        }
+    }
+
+    /// <summary>Turns a finished slider adjustment into a single undo step.</summary>
+    private void FlushVeilHistory()
+    {
+        _veilHistoryTimer.Stop();
+        if (!_veilEditPending)
+        {
+            return;
+        }
+
+        _veilEditPending = false;
+        var before = _veilBeforeEdit;
+        var after = _veil;
+        if (Math.Abs(before - after) < 0.005 || _currentItem is null)
+        {
+            return;
+        }
+
+        PushHistory(new HistoryEntry(
+            Undo: () => SetVeil(before),
+            Redo: () => SetVeil(after)));
+    }
+
     private void Undo()
     {
+        FlushVeilHistory();
         if (_undoStack.Count == 0 || _currentItem is null)
         {
             return;
@@ -694,6 +797,7 @@ public partial class EditorWindow : Window
 
     private void Redo()
     {
+        FlushVeilHistory();
         if (_redoStack.Count == 0 || _currentItem is null)
         {
             return;
@@ -738,8 +842,16 @@ public partial class EditorWindow : Window
             return;
         }
 
+        FlushVeilHistory();
+        // A plain PNG (dropped into the folder) has no original to keep apart from the veil and ink: give it
+        // sidecars first so they stay editable instead of being baked into the only copy of the image.
+        if (!_currentItem.HasEditableSidecars)
+        {
+            _currentItem = _library.PromoteToEditable(_currentItem);
+        }
+
         var flattened = RenderFlattened();
-        _library.SaveDocument(_currentItem, _originalSource, InkSurface.Strokes, flattened);
+        _library.SaveDocument(_currentItem, _originalSource, InkSurface.Strokes, flattened, _veil);
         _loadedRevision = _library.GetRevision(_currentItem);
         _isDirty = false;
         UpdateDocInfo();
@@ -755,7 +867,7 @@ public partial class EditorWindow : Window
     }
 
     private BitmapSource RenderFlattened() =>
-        CaptureRenderer.Flatten(_originalSource, InkSurface.Strokes);
+        CaptureRenderer.Flatten(_originalSource, InkSurface.Strokes, _veil);
 
     private void UpdateZoom()
     {

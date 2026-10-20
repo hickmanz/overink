@@ -9,6 +9,7 @@ namespace OverInk.Toolbar;
 
 public partial class ColorPickerControl : UserControl
 {
+    // Keep in sync with the Image/Ellipse/Canvas sizes in ColorPickerControl.xaml.
     private const int WheelSize = 176;
 
     private WriteableBitmap? _wheelBitmap;
@@ -25,6 +26,23 @@ public partial class ColorPickerControl : UserControl
     }
 
     public event EventHandler<Color>? ColorChanged;
+
+    /// <summary>The Save button was pressed for the color currently shown.</summary>
+    public event EventHandler<Color>? SaveRequested;
+
+    /// <summary>Enables the Save button, or shows "Saved" when the color already has a swatch.</summary>
+    public void SetCanSave(bool canSave)
+    {
+        SaveButton.IsEnabled = canSave;
+        SaveButton.Opacity = canSave ? 1 : 0.5;
+        SaveButton.Content = canSave ? "Save color" : "Saved";
+        SaveButton.Cursor = canSave ? Cursors.Hand : Cursors.Arrow;
+    }
+
+    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    {
+        SaveRequested?.Invoke(this, SelectedColor);
+    }
 
     public Color SelectedColor => ColorSpaces.HsvToRgb(_hue, _sat, _val);
 

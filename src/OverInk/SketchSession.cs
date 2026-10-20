@@ -14,7 +14,18 @@ public sealed class SketchSession
         PenThickness = settings.Current.PenThickness;
         PressureSensitive = settings.Current.PressureSensitive;
         ScreenVeil = Math.Clamp(settings.Current.ScreenVeilOpacity, 0, MaxScreenVeil);
+        settings.Current.CustomColors ??= new List<string>();
+        CustomColors = new CustomColorPalette(settings.Current.CustomColors);
+        // Saving/removing a color refreshes the toolbar and rebroadcasts state (and so the list) to the iPad.
+        CustomColors.Changed += () =>
+        {
+            Settings.Save();
+            Notify();
+        };
     }
+
+    /// <summary>Colors saved from the custom wheel; shared by the toolbar, the PC editor and the iPad.</summary>
+    public CustomColorPalette CustomColors { get; }
 
     /// <summary>Strongest veil the UI allows: enough to calm the screen, never enough to hide it.</summary>
     public const double MaxScreenVeil = 0.6;

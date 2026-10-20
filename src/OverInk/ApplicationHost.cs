@@ -335,9 +335,22 @@ public sealed class ApplicationHost : IDisposable
         _capturing = true;
         try
         {
+            // Ink only ends up in the capture (and is only worth clearing) when the overlay was showing.
+            var inkWasShown = _overlay.IsVisible;
             var item = CaptureToLibrary(kind);
             if (item is not null)
             {
+                if (inkWasShown && _settings.Current.ClearDrawingAfterCapture)
+                {
+                    _overlay.ClearAll();
+                }
+
+                if (_settings.Current.ExitDrawModeOnCapture && _session.Mode == InteractionMode.Draw)
+                {
+                    _session.SetMode(InteractionMode.PassThrough);
+                    _session.PersistSettings();
+                }
+
                 OpenEditor(item);
                 if (_lastCaptureCopied)
                 {
@@ -355,7 +368,7 @@ public sealed class ApplicationHost : IDisposable
     private void CaptureRegionFromHotkey() => CaptureToEditor(CaptureRequestKind.PickRegion);
 
     /// <summary>Puts the capture on the clipboard (image + file) when "auto-copy" is on. Never throws.</summary>
-    private void AutoCopyToClipboard(BitmapSource bitmap, StrokeCollection ink, CaptureItem item)
+    private void AutoCopyToClipboard(BitmapSource bitmap, StrokeCollection ink, double veil, CaptureItem item)
     {
         _lastCaptureCopied = false;
         if (!_settings.Current.AutoCopyCaptures)
@@ -365,7 +378,7 @@ public sealed class ApplicationHost : IDisposable
 
         try
         {
-            var flattened = ink.Count == 0 ? bitmap : CaptureRenderer.Flatten(bitmap, ink);
+            var flattened = ink.Count == 0 && veil <= 0 ? bitmap : CaptureRenderer.Flatten(bitmap, ink, veil);
             ImageTransfer.SetClipboardWithRetry(ImageTransfer.BuildDataObject(flattened, item.FlattenedPath));
             _lastCaptureCopied = true;
         }
@@ -398,9 +411,9 @@ public sealed class ApplicationHost : IDisposable
             return null;
         }
 
-        var (bitmap, ink) = CaptureScreenWithInk(pixelBounds, geometry);
-        var item = _captureLibrary.CreateFromCapture(bitmap, ink);
-        AutoCopyToClipboard(bitmap, ink, item);
+        var (bitmap, ink, veil) = CaptureScreenWithInk(pixelBounds, geometry);
+        var item = _captureLibrary.CreateFromCapture(bitmap, ink, veil);
+        AutoCopyToClipboard(bitmap, ink, veil, item);
         return item;
     }
 
@@ -408,19 +421,22 @@ public sealed class ApplicationHost : IDisposable
     /// Grabs the clean screen (overlay ink hidden for the instant of the grab) together with whatever is drawn
     /// on the overlay, as strokes in image-pixel coordinates. The capture keeps that ink editable.
     /// </summary>
-    private (BitmapSource Bitmap, StrokeCollection Ink) CaptureScreenWithInk(Rect pixelBounds, MonitorGeometry geometry)
+    private (BitmapSource Bitmap, StrokeCollection Ink, double Veil) CaptureScreenWithInk(Rect pixelBounds, MonitorGeometry geometry)
     {
         // A hidden overlay shows no ink on screen, so none belongs in the capture either.
         var includeInk = _overlay.IsVisible;
+        // The veil is captured as a value (not baked into the screenshot) so the editor can adjust it.
+        var veil = includeInk ? _overlay.VisibleVeilOpacity : 0;
         BitmapSource bitmap;
         using (includeInk ? _overlay.HideInkForCapture() : null)
+        using (_settings.Current.CaptureToolbarInGrabs ? _toolbar.IncludeInCapture() : null)
         {
             bitmap = ScreenCaptureService.Capture(pixelBounds, CollectWindowsHiddenDuringCapture());
         }
 
         if (!includeInk)
         {
-            return (bitmap, new StrokeCollection());
+            return (bitmap, new StrokeCollection(), veil);
         }
 
         var scaleX = geometry.Dips.Width > 0 ? geometry.Pixels.Width / geometry.Dips.Width : 1;
@@ -439,7 +455,7 @@ public sealed class ApplicationHost : IDisposable
             }
         }
 
-        return (bitmap, visible);
+        return (bitmap, visible, veil);
     }
 
     /// <summary>
@@ -456,13 +472,13 @@ public sealed class ApplicationHost : IDisposable
                 return (null, "Capture was cancelled.");
             }
 
-            var (bitmap, ink) = CaptureScreenWithInk(pixelBounds, geometry);
+            var (bitmap, ink, veil) = CaptureScreenWithInk(pixelBounds, geometry);
             if (ScreenCaptureService.IsBlank(bitmap))
             {
                 return (null, "Capture failed: the PC screen is blank or locked.");
             }
 
-            return (_captureLibrary.CreateFromCapture(bitmap, ink).Id, null);
+            return (_captureLibrary.CreateFromCapture(bitmap, ink, veil).Id, null);
         }
         catch (Exception ex)
         {
@@ -509,7 +525,13 @@ public sealed class ApplicationHost : IDisposable
 
     private Window[] CollectWindowsHiddenDuringCapture()
     {
-        var list = new List<Window> { _toolbar };
+        // The toolbar is normally hidden for the grab; the "toolbar in grabs" option keeps it (see IncludeInCapture).
+        var list = new List<Window>();
+        if (!_settings.Current.CaptureToolbarInGrabs)
+        {
+            list.Add(_toolbar);
+        }
+
         if (_captureRegionChrome is { IsVisible: true })
         {
             list.Add(_captureRegionChrome);
@@ -563,7 +585,7 @@ public sealed class ApplicationHost : IDisposable
     {
         if (_editor is null)
         {
-            _editor = new EditorWindow(_captureLibrary, _session.PenColor, _session.PenThickness);
+            _editor = new EditorWindow(_captureLibrary, _session.PenColor, _session.PenThickness, _session.CustomColors);
             // The screen veil sits on a topmost overlay, so it would wash out the editor; hide it while open.
             _overlay.SetEditorOpen(true);
             _editor.Closed += (_, _) =>

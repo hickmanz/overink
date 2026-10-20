@@ -19,9 +19,11 @@ public sealed record RemoteLibraryItemDto(string Id, string Name, long CreatedAt
 
 public sealed record RemoteLibraryStroke(string Color, double Size, float[] Pts, bool IgnorePressure);
 
-public sealed record RemoteLibraryStrokes(string Rev, int W, int H, List<RemoteLibraryStroke> Strokes);
+/// <summary><c>Veil</c> is the capture's white wash (0–0.9); the original is served clean and the client applies it.</summary>
+public sealed record RemoteLibraryStrokes(string Rev, int W, int H, List<RemoteLibraryStroke> Strokes, double Veil = 0);
 
-public sealed record RemoteLibrarySave(string BaseRev, List<RemoteLibraryStroke> Strokes);
+/// <summary><c>Veil</c> is optional: when absent, the capture's stored veil is kept.</summary>
+public sealed record RemoteLibrarySave(string BaseRev, List<RemoteLibraryStroke> Strokes, double? Veil = null);
 
 /// <summary>
 /// HTTP side of the iPad capture library: list, thumbnails, original image, ink read/write, delete.
@@ -248,6 +250,7 @@ public sealed class RemoteLibraryService : IDisposable
 
         ctx.Response.Headers.CacheControl = "private, max-age=3600";
 
+
         if (!PngInfo.TryReadSize(path, out var w, out var h) || Math.Max(w, h) <= MaxOriginalEdge)
         {
             return Results.File(OpenShared(path), "image/png");
@@ -293,7 +296,7 @@ public sealed class RemoteLibraryService : IDisposable
                 strokes = new StrokeCollection();
             }
 
-            return new RemoteLibraryStrokes(rev, w, h, ToDtos(strokes));
+            return new RemoteLibraryStrokes(rev, w, h, ToDtos(strokes), _library.LoadVeil(item));
         }).Task.ConfigureAwait(false);
 
         ctx.Response.Headers.CacheControl = "no-store";
@@ -344,8 +347,11 @@ public sealed class RemoteLibraryService : IDisposable
                 var editable = _library.PromoteToEditable(item);
                 var strokes = BuildStrokes(request.Strokes);
                 var original = _library.LoadOriginal(editable);
-                var flattened = CaptureRenderer.Flatten(original, strokes);
-                _library.SaveEdit(editable, strokes, flattened);
+                var veil = request.Veil is { } sent && double.IsFinite(sent)
+                    ? Math.Clamp(sent, 0, CaptureLibrary.MaxVeil)
+                    : _library.LoadVeil(editable);
+                var flattened = CaptureRenderer.Flatten(original, strokes, veil);
+                _library.SaveEdit(editable, strokes, flattened, veil);
                 return _library.GetRevision(editable);
             }).Task.ConfigureAwait(false);
 

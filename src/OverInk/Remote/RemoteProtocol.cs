@@ -61,7 +61,9 @@ public sealed record RemoteState(
     double ScreenH,
     bool RegionActive,
     bool PressureSensitive = true,
-    double ScreenVeil = 0);
+    double ScreenVeil = 0,
+    /// <summary>Colors saved on the PC, shown after the presets. Sent even when empty so clients can clear theirs.</summary>
+    IReadOnlyList<string>? CustomColors = null);
 
 public sealed record RemoteSetPressure(bool Enabled);
 

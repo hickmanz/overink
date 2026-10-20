@@ -23,6 +23,8 @@ public partial class ToolbarWindow : Window
     private bool _syncingSettingsUi;
     private bool _vertical;
     private Style? _dividerStyle;
+    private SketchTool _lastShapeTool = SketchTool.Pen;
+    private DateTime _toolPopupClosedAt = DateTime.MinValue;
 
     public event EventHandler<CaptureRequestedEventArgs>? CaptureRequested;
     public event EventHandler? HideRequested;
@@ -58,6 +60,14 @@ public partial class ToolbarWindow : Window
             SetVertical(true, keepGripInPlace: false);
         }
 
+        if (session.Tool != SketchTool.Eraser)
+        {
+            _lastShapeTool = session.Tool;
+        }
+
+        ApplyToolLayout();
+
+        _session.CustomColors.Changed += CustomColors_Changed;
         _session.Changed += SyncFromSession;
         _session.UndoStack.Changed += (_, _) => SyncFromSession();
         SyncFromSession();
@@ -116,6 +126,10 @@ public partial class ToolbarWindow : Window
     {
         _syncingSettingsUi = true;
         HideToolbarWhenNotDrawingCheck.IsChecked = _session.Settings.Current.HideToolbarWhenNotDrawing;
+        CompactToolsCheck.IsChecked = _session.Settings.Current.CompactToolbarTools;
+        ExitDrawOnCaptureCheck.IsChecked = _session.Settings.Current.ExitDrawModeOnCapture;
+        ClearAfterCaptureCheck.IsChecked = _session.Settings.Current.ClearDrawingAfterCapture;
+        ToolbarInGrabsCheck.IsChecked = _session.Settings.Current.CaptureToolbarInGrabs;
         RemoteServerCheck.IsChecked = _session.Settings.Current.RemoteEnabled;
         AutoCopyCheck.IsChecked = _session.Settings.Current.AutoCopyCaptures;
         _syncingSettingsUi = false;
@@ -260,35 +274,182 @@ public partial class ToolbarWindow : Window
 
     private void UpdateToolButtons()
     {
-        foreach (var child in ToolPanel.Children)
+        if (_session.Tool != SketchTool.Eraser)
         {
-            if (child is ToggleButton toggle && toggle.Tag is string tag &&
-                Enum.TryParse<SketchTool>(tag, out var tool))
+            _lastShapeTool = _session.Tool;
+        }
+
+        var toggles = ToolPanel.Children.OfType<ToggleButton>()
+            .Concat(ToolOptionsPanel.Children.OfType<ToggleButton>())
+            .Append(EraserQuickButton);
+        foreach (var toggle in toggles)
+        {
+            if (toggle.Tag is string tag && Enum.TryParse<SketchTool>(tag, out var tool))
             {
                 toggle.IsChecked = _session.Tool == tool;
             }
         }
+
+        // The compact button shows the drawing tool you last used, lit while it's the active one.
+        ShapeToolButton.IsChecked = _session.Tool != SketchTool.Eraser;
+        ShapeToolIcon.Tag = FindResource("Icon" + _lastShapeTool);
+        ShapeToolButton.ToolTip = _session.Tool == SketchTool.Eraser
+            ? $"{_lastShapeTool} — click to draw again"
+            : $"{_lastShapeTool} — click again for more tools";
     }
 
-    private void BuildColorSwatches()
+    /// <summary>Shows either the six separate tool buttons or the compact pair (drawing tool + eraser).</summary>
+    private void ApplyToolLayout()
     {
-        foreach (var hex in PresetPalette.HexColors)
+        var compact = _session.Settings.Current.CompactToolbarTools;
+        ToolPopup.IsOpen = false;
+        ToolPanel.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        ToolMenuGroup.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        BoundsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// The toolbar is normally excluded from every screen capture (so it never shows in grabs or in the tablet's
+    /// stream). This lifts that exclusion until the returned object is disposed, for a grab that should include it.
+    /// </summary>
+    public IDisposable IncludeInCapture()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero)
         {
-            if (!PresetPalette.TryParseHex(hex, out var color))
+            return new RestoreAffinity(null);
+        }
+
+        NativeMethods.SetWindowDisplayAffinity(handle, NativeMethods.WdaNone);
+        return new RestoreAffinity(handle);
+    }
+
+    private sealed class RestoreAffinity(IntPtr? handle) : IDisposable
+    {
+        private IntPtr? _handle = handle;
+
+        public void Dispose()
+        {
+            if (_handle is { } h)
             {
-                continue;
+                NativeMethods.SetWindowDisplayAffinity(h, NativeMethods.WdaExcludeFromCapture);
+                _handle = null;
+            }
+        }
+    }
+
+    private void CaptureBehavior_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _syncingSettingsUi)
+        {
+            return;
+        }
+
+        _session.Settings.Current.ExitDrawModeOnCapture = ExitDrawOnCaptureCheck.IsChecked == true;
+        _session.Settings.Current.ClearDrawingAfterCapture = ClearAfterCaptureCheck.IsChecked == true;
+        _session.Settings.Current.CaptureToolbarInGrabs = ToolbarInGrabsCheck.IsChecked == true;
+        _session.PersistSettings();
+    }
+
+    private void CompactTools_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _syncingSettingsUi)
+        {
+            return;
+        }
+
+        _session.Settings.Current.CompactToolbarTools = CompactToolsCheck.IsChecked == true;
+        _session.PersistSettings();
+        ApplyToolLayout();
+    }
+
+    private void ShapeToolButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_session.Tool == SketchTool.Eraser)
+            {
+                // Back from the eraser: the first click just resumes the last drawing tool.
+                _session.SetTool(_lastShapeTool);
+                _session.PersistSettings();
+                return;
             }
 
-            var swatch = new ToggleButton
+            if (ToolPopup.IsOpen)
             {
-                Style = (Style)FindResource("GridSwatch"),
-                Background = new SolidColorBrush(color),
-                Tag = hex,
-                ToolTip = hex
-            };
-            swatch.Click += ColorSwatch_Click;
-            SwatchPanel.Children.Add(swatch);
+                ToolPopup.IsOpen = false;
+                return;
+            }
+
+            // Clicking the button while the list is open closes it (focus loss) and then fires Click;
+            // don't pop it straight back open.
+            if ((DateTime.UtcNow - _toolPopupClosedAt).TotalMilliseconds < 250)
+            {
+                return;
+            }
+
+            ToolPopup.IsOpen = true;
         }
+        finally
+        {
+            // The toggle flips itself on click; put its lit state back to "a drawing tool is active".
+            UpdateToolButtons();
+        }
+    }
+
+    private void ToolPopup_Closed(object? sender, EventArgs e) => _toolPopupClosedAt = DateTime.UtcNow;
+
+    /// <summary>Presets first, then the colors the user saved from the wheel (right-click one to remove it).</summary>
+    private void BuildColorSwatches()
+    {
+        SwatchPanel.Children.Clear();
+        foreach (var hex in PresetPalette.HexColors)
+        {
+            AddSwatch(hex, saved: false);
+        }
+
+        foreach (var hex in _session.CustomColors.Colors)
+        {
+            AddSwatch(hex, saved: true);
+        }
+    }
+
+    private void AddSwatch(string hex, bool saved)
+    {
+        if (!PresetPalette.TryParseHex(hex, out var color))
+        {
+            return;
+        }
+
+        var swatch = new ToggleButton
+        {
+            Style = (Style)FindResource("GridSwatch"),
+            Background = new SolidColorBrush(color),
+            Tag = hex,
+            ToolTip = saved ? $"{hex} (right-click to remove)" : hex
+        };
+        swatch.Click += ColorSwatch_Click;
+        if (saved)
+        {
+            CustomSwatchMenu.Attach(
+                swatch,
+                () => _session.CustomColors.Remove(hex),
+                // The popover dismisses on outside clicks, which would otherwise close it under the menu.
+                open => ColorPickerPopup.StaysOpen = open);
+        }
+
+        SwatchPanel.Children.Add(swatch);
+    }
+
+    private void CustomColors_Changed()
+    {
+        BuildColorSwatches();
+        UpdateColorSwatches();
+    }
+
+    private void ColorPicker_SaveRequested(object sender, Color color)
+    {
+        _session.CustomColors.Add(color);
     }
 
     private void UpdateColorSwatches()
@@ -303,7 +464,9 @@ public partial class ToolbarWindow : Window
         }
 
         CustomColorButton.Background = new SolidColorBrush(_session.PenColor);
-        CustomColorButton.IsChecked = !PresetPalette.IsPreset(_session.PenColor);
+        var hasSwatch = _session.CustomColors.HasSwatch(_session.PenColor);
+        CustomColorButton.IsChecked = !hasSwatch;
+        ColorPicker.SetCanSave(!hasSwatch);
         ColorDot.Fill = new SolidColorBrush(_session.PenColor);
         UpdateStrokeVisuals();
     }
@@ -329,6 +492,8 @@ public partial class ToolbarWindow : Window
         BrandGroup.Orientation = panelOrientation;
         BrandGroup.Margin = vertical ? new Thickness(0, 2, 0, 4) : new Thickness(2, 0, 4, 0);
         ToolPanel.Orientation = panelOrientation;
+        ToolMenuGroup.Orientation = panelOrientation;
+        ToolOptionsPanel.Orientation = panelOrientation;
         ColorGroup.Orientation = panelOrientation;
         UndoGroup.Orientation = panelOrientation;
         CaptureGroup.Orientation = panelOrientation;
@@ -436,6 +601,7 @@ public partial class ToolbarWindow : Window
             placement = center > (dips.Left + dips.Right) / 2 ? PlacementMode.Left : PlacementMode.Right;
         }
 
+        ToolPopup.Placement = placement;
         ColorPickerPopup.Placement = placement;
         StrokePopup.Placement = placement;
         VeilPopup.Placement = placement;
@@ -491,6 +657,7 @@ public partial class ToolbarWindow : Window
         if (sender is ToggleButton { Tag: string tag } &&
             Enum.TryParse<SketchTool>(tag, out var tool))
         {
+            ToolPopup.IsOpen = false;
             _session.SetTool(tool);
             _session.PersistSettings();
         }
@@ -508,7 +675,26 @@ public partial class ToolbarWindow : Window
         }
     }
 
-    private void CustomColorButton_Click(object sender, RoutedEventArgs e)
+    private void CustomColorRow_Click(object sender, MouseButtonEventArgs e)
+    {
+        // The wheel button handles its own clicks; the rest of the row does the same job.
+        for (var node = e.OriginalSource as DependencyObject; node is not null && !ReferenceEquals(node, sender);
+             node = node is Visual or System.Windows.Media.Media3D.Visual3D
+                 ? VisualTreeHelper.GetParent(node)
+                 : LogicalTreeHelper.GetParent(node))
+        {
+            if (node is ToggleButton)
+            {
+                return;
+            }
+        }
+
+        ToggleCustomColor();
+    }
+
+    private void CustomColorButton_Click(object sender, RoutedEventArgs e) => ToggleCustomColor();
+
+    private void ToggleCustomColor()
     {
         // Expand / collapse the wheel inside the color popover.
         var show = ColorPicker.Visibility != Visibility.Visible;

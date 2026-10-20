@@ -1,5 +1,5 @@
 import { icon } from './icons.js?v=4';
-import { createLibraryApi, renderLibraryGrid, LibraryError } from './library.js?v=2';
+import { createLibraryApi, renderLibraryGrid, LibraryError } from './library.js?v=3';
 
 const params = new URLSearchParams(location.search);
 const allowMouse = params.get('mouse') === '1'
@@ -35,7 +35,10 @@ const statusEl = document.getElementById('status');
 const statusChip = document.getElementById('statusChip');
 const statusIconEl = document.getElementById('statusIcon');
 const logEl = document.getElementById('log');
-const toolsEl = document.getElementById('tools');
+const toolBtn = document.getElementById('toolBtn');
+const eraserBtn = document.getElementById('eraserBtn');
+const toolPopover = document.getElementById('toolPopover');
+const toolOptionsEl = document.getElementById('toolOptions');
 const settingsPanel = document.getElementById('settingsPanel');
 const settingsBtn = document.getElementById('settingsBtn');
 const debugLogToggle = document.getElementById('debugLogToggle');
@@ -44,6 +47,16 @@ const colorBtn = document.getElementById('colorBtn');
 const colorDot = document.getElementById('colorDot');
 const colorPopover = document.getElementById('colorPopover');
 const swatchesEl = document.getElementById('swatches');
+const customToggle = document.getElementById('customToggle');
+const customBack = document.getElementById('customBack');
+const colorSwatchView = document.getElementById('colorSwatchView');
+const colorCustomView = document.getElementById('colorCustomView');
+const wheelCanvas = document.getElementById('wheelCanvas');
+const brightSlider = document.getElementById('brightSlider');
+const brightValue = document.getElementById('brightValue');
+const customPreview = document.getElementById('customPreview');
+const customHex = document.getElementById('customHex');
+const saveColorBtn = document.getElementById('saveColorBtn');
 const sizeBtn = document.getElementById('sizeBtn');
 const sizeDot = document.getElementById('sizeDot');
 const sizePopover = document.getElementById('sizePopover');
@@ -60,7 +73,7 @@ const redoBtn = document.getElementById('redoBtn');
 const clearBtn = document.getElementById('clearBtn');
 
 let debugLog = localStorage.getItem('overink.debugLog') === '1';
-/** Which popover is open: 'color' | 'size' | 'veil' | 'settings' | null. */
+/** Which popover is open: 'tool' | 'color' | 'size' | 'veil' | 'settings' | null. */
 let openPopover = null;
 
 /*
@@ -120,7 +133,34 @@ let inkRevision = 0;
 let tool = 'Pen';
 let color = '#E53935';
 let size = 4;
-let followHost = false;
+/**
+ * Tool, colour and width are this device's own: remembered here, never pushed to the PC and never overwritten by
+ * it, so the PC toolbar and the iPad can each hold a different pen. (Pressure, veil and the saved custom
+ * colours stay shared.) Strokes carry their own colour and width, so the PC needs nothing else.
+ */
+const PEN_KEY = 'overink.pen';
+const PEN_TOOLS = ['Pen', 'Line', 'Arrow', 'Rectangle', 'Ellipse', 'Eraser'];
+let penSeeded = false;
+
+function loadPen() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PEN_KEY) || 'null');
+    if (!saved) return;
+    if (PEN_TOOLS.includes(saved.tool)) tool = saved.tool;
+    if (typeof saved.color === 'string' && /^#[0-9a-f]{6}$/i.test(saved.color)) color = saved.color.toUpperCase();
+    if (Number.isFinite(saved.size)) size = Math.max(1, Math.min(20, saved.size));
+    penSeeded = true;
+  } catch { /* unreadable: start from the PC's pen */ }
+}
+
+function savePen() {
+  try {
+    localStorage.setItem(PEN_KEY, JSON.stringify({ tool, color, size }));
+  } catch { /* private mode / full: just not remembered */ }
+}
+
+loadPen();
+
 /** Whether pen pressure changes stroke width. Shared with the PC (it is the source of truth). */
 let pressureSensitive = true;
 
@@ -179,6 +219,8 @@ const colors = [
   '#E53935', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5', '#1E88E5', '#00ACC1',
   '#43A047', '#CDDC39', '#FDD835', '#FB8C00', '#795548', '#FFFFFF', '#212121'
 ];
+/** Colors saved on the PC, shown after the presets. */
+let customColors = [];
 
 /** WPF uses #AARRGGBB; canvas/CSS expects #RRGGBB (8-char CSS is #RRGGBBAA). */
 function normalizeColorHex(hex) {
@@ -245,6 +287,7 @@ let dockEdge = localStorage.getItem('overink.dockEdge');
 if (!DOCK_EDGES.includes(dockEdge)) dockEdge = 'bottom';
 
 const POPOVERS = {
+  tool: { panel: toolPopover, button: toolBtn },
   color: { panel: colorPopover, button: colorBtn },
   size: { panel: sizePopover, button: sizeBtn },
   veil: { panel: veilPopover, button: veilBtn },
@@ -280,6 +323,11 @@ function positionPopover(name) {
 
 function setPopover(name) {
   if (name === openPopover) name = null;
+  if (typeof clearRemovable === 'function') clearRemovable();
+  // Always reopen on the swatches; the wheel is one tap away.
+  if (name === 'color' && typeof showColorCustom === 'function' && !colorCustomView.classList.contains('panel-hidden')) {
+    showColorCustom(false);
+  }
   openPopover = name;
   for (const [key, { panel, button }] of Object.entries(POPOVERS)) {
     const open = key === name;
@@ -322,7 +370,7 @@ addEventListener('resize', resize);
 resize();
 
 /** Messages that still go to the PC while editing a library capture; everything else stays local. */
-const DOC_PASSTHROUGH = new Set(['hello', 'ping', 'viewMode', 'capture']);
+const DOC_PASSTHROUGH = new Set(['hello', 'ping', 'viewMode', 'capture', 'saveColor', 'removeColor']);
 
 function send(obj) {
   if (docMode && !DOC_PASSTHROUGH.has(obj.t)) {
@@ -531,11 +579,25 @@ function handleJson(msg) {
 }
 
 function applyState(state) {
-  tool = state.tool || tool;
-  if (state.color) color = normalizeColorHex(state.color);
-  if (state.size && !sizeDragging) size = state.size;
+  // Mid-drag on the color wheel our own value is newer than whatever the PC echoes back.
+  // Tool, colour and width belong to this device (see loadPen): the PC's choices are only used the very
+  // first time, to start from something sensible.
+  if (!penSeeded) {
+    if (state.color) color = normalizeColorHex(state.color);
+    if (state.size) size = Math.max(1, Math.min(20, Number(state.size) || size));
+    penSeeded = true;
+    savePen();
+  }
+  if (Array.isArray(state.customColors)) {
+    const next = state.customColors.map(normalizeColorHex);
+    if (next.join(',') !== customColors.join(',')) {
+      customColors = next;
+      renderSwatches();
+    }
+  }
   // The PC owns the veil (it renders it into the stream); mirror its value unless we're mid-drag.
-  if (typeof state.screenVeil === 'number' && !veilDragging) screenVeil = state.screenVeil;
+  // (While editing a capture the slider shows that capture's own veil, which the PC doesn't know about.)
+  if (typeof state.screenVeil === 'number' && !veilDragging && !docMode) screenVeil = state.screenVeil;
   if (typeof state.pressureSensitive === 'boolean') pressureSensitive = state.pressureSensitive;
   if (state.screenW > 0 && state.screenH > 0) {
     liveScreenW = state.screenW;
@@ -815,6 +877,37 @@ function redrawInk() {
   drawEraserCursor(lctx);
 }
 
+/** Paints the screen (or capture) image, plus the capture's veil, onto the already-cleared frame canvas. */
+function paintFrame() {
+  fctx.save();
+  applyViewTransform(fctx);
+  updateContentRect();
+  if (frameBitmap) {
+    fctx.drawImage(frameBitmap, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+    // Live, the PC bakes its veil into the stream; a capture is served clean and the veil is laid on here.
+    if (docMode && screenVeil > 0) {
+      fctx.fillStyle = `rgba(255, 255, 255, ${screenVeil})`;
+      fctx.fillRect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+    }
+  } else {
+    fctx.fillStyle = '#222';
+    fctx.fillRect(0, 0, innerWidth, innerHeight);
+  }
+  fctx.restore();
+}
+
+/** Repaints only the image layer (cheap), e.g. while dragging the veil slider over a page of handwriting. */
+function repaintFrame() {
+  if (viewPreviewActive) {
+    redraw();
+    return;
+  }
+  const dpr = devicePixelRatio || 1;
+  fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  fctx.clearRect(0, 0, innerWidth, innerHeight);
+  paintFrame();
+}
+
 function redraw() {
   clearViewPreview();
   renderedView.scale = view.scale;
@@ -829,16 +922,7 @@ function redraw() {
   pctx.clearRect(0, 0, innerWidth, innerHeight);
   lctx.clearRect(0, 0, innerWidth, innerHeight);
 
-  fctx.save();
-  applyViewTransform(fctx);
-  updateContentRect();
-  if (frameBitmap) {
-    fctx.drawImage(frameBitmap, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
-  } else {
-    fctx.fillStyle = '#222';
-    fctx.fillRect(0, 0, innerWidth, innerHeight);
-  }
-  fctx.restore();
+  paintFrame();
 
   drawStrokeMap(pctx, peerStrokes);
   for (const shape of peerShapes.values()) drawShape(pctx, shape);
@@ -1785,11 +1869,15 @@ const TOOL_DEFS = [
   { name: 'Line', icon: 'line', label: 'Line' },
   { name: 'Arrow', icon: 'arrow', label: 'Arrow' },
   { name: 'Rectangle', icon: 'rectangle', label: 'Rectangle' },
-  { name: 'Ellipse', icon: 'ellipse', label: 'Ellipse' },
-  { name: 'Eraser', icon: 'eraser', label: 'Eraser' }
+  { name: 'Ellipse', icon: 'ellipse', label: 'Ellipse' }
 ];
 
 const toolButtons = new Map();
+/** The last non-eraser tool: what the tool button shows and what tapping it brings back after erasing. */
+let lastDrawTool = 'Pen';
+/** Veil range: the PC overlay stops at 60%, a capture can go further (it is only a number there). */
+const LIVE_VEIL_MAX = 60;
+const DOC_VEIL_MAX = 90;
 const swatchButtons = new Map();
 let sizeDragging = false;
 /** White veil the PC lays over the screen under the ink, 0 – 0.6 (0 = off). */
@@ -1808,22 +1896,274 @@ function isLightColor(hex) {
 
 function selectTool(name) {
   tool = name;
-  if (!followHost) send({ t: 'setTool', tool: name });
+  savePen();
   updateUi();
 }
 
+/** Presets first, then the colors saved on the PC (the PC owns the list; it arrives with the state). */
+function renderSwatches() {
+  swatchesEl.innerHTML = '';
+  swatchButtons.clear();
+  const seen = new Set();
+  const addSwatch = (raw, saved) => {
+    const c = normalizeColorHex(raw);
+    if (seen.has(c)) return;
+    seen.add(c);
+    const s = document.createElement('button');
+    s.type = 'button';
+    s.className = 'sw';
+    s.style.background = c;
+    s.setAttribute('aria-label', saved ? `Saved color ${c}` : `Color ${c}`);
+    s.innerHTML = `<span class="sw-check">${icon('check', 18)}</span>` +
+      (saved ? `<span class="sw-remove">${icon('x', 20)}</span>` : '');
+    s.firstElementChild.style.opacity = '0';
+    s.firstElementChild.style.color = isLightColor(c) ? '#111' : '#fff';
+    if (saved) {
+      attachRemoveGesture(s, c);
+    } else {
+      s.onclick = () => selectColor(c);
+    }
+    swatchesEl.appendChild(s);
+    swatchButtons.set(c, s);
+  };
+  for (const c of colors) addSwatch(c, false);
+  for (const c of customColors) addSwatch(c, true);
+  // The list can grow or shrink while the popover is open; keep it anchored to the dock.
+  if (openPopover === 'color') positionPopover('color');
+}
+
+/** Saved swatch: tap selects; press-and-hold (or right-click) arms it, then tapping it again removes it. */
+function attachRemoveGesture(s, c) {
+  let timer = null;
+  let held = false;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  s.addEventListener('pointerdown', () => {
+    held = false;
+    cancel();
+    timer = setTimeout(() => { held = true; armRemove(s); }, 500);
+  });
+  s.addEventListener('pointerup', cancel);
+  s.addEventListener('pointerleave', cancel);
+  s.addEventListener('pointercancel', cancel);
+  s.addEventListener('contextmenu', (e) => { e.preventDefault(); armRemove(s); });
+  s.onclick = () => {
+    if (held) { held = false; return; }
+    if (s.classList.contains('removable')) {
+      send({ t: 'removeColor', color: c });
+      return;
+    }
+    selectColor(c);
+  };
+}
+
+function armRemove(s) {
+  clearRemovable();
+  s.classList.add('removable');
+}
+
+function clearRemovable() {
+  for (const el of swatchesEl.querySelectorAll('.sw.removable')) el.classList.remove('removable');
+}
+
 function selectColor(hex) {
+  clearRemovable();
   color = normalizeColorHex(hex);
-  if (!followHost) send({ t: 'setColor', color });
+  savePen();
   updateUi();
   closePopover();
+}
+
+// ---------- Custom color wheel ----------
+// Same model as the PC picker: the wheel is hue (angle) and saturation (distance), the slider is brightness.
+// The color applies live while dragging (the popover stays open); "Save color" asks the PC to keep it.
+
+const WHEEL_CSS_SIZE = 168;
+let pickHue = 0;
+let pickSat = 1;
+let pickVal = 1;
+let colorDragging = false;
+let colorSendTimer = null;
+let wheelPixels = null;
+let wheelPixelsVal = -1;
+
+function hsvToRgb(h, s, v) {
+  const c = v * s;
+  const hp = (((h % 360) + 360) % 360) / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0, g = 0, b = 0;
+  if (hp < 1) [r, g, b] = [c, x, 0];
+  else if (hp < 2) [r, g, b] = [x, c, 0];
+  else if (hp < 3) [r, g, b] = [0, c, x];
+  else if (hp < 4) [r, g, b] = [0, x, c];
+  else if (hp < 5) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const m = v - c;
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+
+function hsvToHex(h, s, v) {
+  const [r, g, b] = hsvToRgb(h, s, v);
+  return `#${[r, g, b].map(n => n.toString(16).padStart(2, '0')).join('')}`.toUpperCase();
+}
+
+function hexToHsv(hex) {
+  const m = /^#([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})$/i.exec(hex || '');
+  if (!m) return [0, 0, 1];
+  const [r, g, b] = [m[1], m[2], m[3]].map(p => parseInt(p, 16) / 255);
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  let h = 0;
+  if (d > 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+  }
+  return [h, max === 0 ? 0 : d / max, max];
+}
+
+function wheelMetrics() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const px = Math.round(WHEEL_CSS_SIZE * dpr);
+  return { px, cx: px / 2, cy: px / 2, maxR: px / 2 - 2 * dpr, dpr };
+}
+
+function drawWheel() {
+  const { px, cx, cy, maxR, dpr } = wheelMetrics();
+  if (wheelCanvas.width !== px) {
+    wheelCanvas.width = px;
+    wheelCanvas.height = px;
+    wheelPixels = null;
+  }
+  const ctx = wheelCanvas.getContext('2d');
+  // Re-rendering the disc is the expensive part; only brightness changes it.
+  if (!wheelPixels || wheelPixelsVal !== pickVal) {
+    const img = ctx.createImageData(px, px);
+    const data = img.data;
+    for (let y = 0; y < px; y++) {
+      for (let x = 0; x < px; x++) {
+        const dx = x - cx + 0.5;
+        const dy = y - cy + 0.5;
+        const dist = Math.hypot(dx, dy);
+        if (dist > maxR) continue;
+        const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+        const [r, g, b] = hsvToRgb(hue, dist / maxR, pickVal);
+        const i = (y * px + x) * 4;
+        data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+      }
+    }
+    wheelPixels = img;
+    wheelPixelsVal = pickVal;
+  }
+  ctx.putImageData(wheelPixels, 0, 0);
+  const rad = pickHue * Math.PI / 180;
+  const mx = cx + Math.cos(rad) * pickSat * maxR;
+  const my = cy + Math.sin(rad) * pickSat * maxR;
+  ctx.lineWidth = 2.5 * dpr;
+  ctx.strokeStyle = '#000';
+  ctx.beginPath(); ctx.arc(mx, my, 9 * dpr, 0, Math.PI * 2); ctx.stroke();
+  ctx.lineWidth = 1.5 * dpr;
+  ctx.strokeStyle = '#fff';
+  ctx.beginPath(); ctx.arc(mx, my, 9 * dpr, 0, Math.PI * 2); ctx.stroke();
+}
+
+function pickFromEvent(e) {
+  const r = wheelCanvas.getBoundingClientRect();
+  const half = r.width / 2;
+  const dx = e.clientX - (r.left + half);
+  const dy = e.clientY - (r.top + half);
+  const maxR = half - 2;
+  pickHue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+  pickSat = Math.min(1, Math.hypot(dx, dy) / maxR);
+  applyPicked();
+}
+
+/** Apply the wheel's color live: update the UI now, tell the PC at most every 60ms (and once more when the drag ends). */
+function applyPicked() {
+  clearRemovable();
+  color = hsvToHex(pickHue, pickSat, pickVal);
+  drawWheel();
+  updateUi();
+  if (colorSendTimer) return;
+  colorSendTimer = setTimeout(() => {
+    colorSendTimer = null;
+    savePen();
+  }, 60);
+}
+
+function endColorDrag() {
+  if (!colorDragging) return;
+  colorDragging = false;
+  clearTimeout(colorSendTimer);
+  colorSendTimer = null;
+  savePen();
+}
+
+/** Called from updateUi: keeps the preview, Save button and (when the color changed elsewhere) the wheel current. */
+function refreshCustomPicker(current) {
+  if (!colorDragging && hsvToHex(pickHue, pickSat, pickVal) !== current) {
+    [pickHue, pickSat, pickVal] = hexToHsv(current);
+    drawWheel();
+  }
+  brightSlider.value = String(Math.round(pickVal * 100));
+  brightValue.textContent = `${Math.round(pickVal * 100)}%`;
+  // The track runs from black to the picked hue at full brightness.
+  brightSlider.style.setProperty('--bright-to', hsvToHex(pickHue, pickSat, 1));
+  customPreview.style.background = current;
+  customHex.textContent = current;
+  const exists = swatchButtons.has(current);
+  saveColorBtn.disabled = exists;
+  saveColorBtn.textContent = exists ? 'Saved' : 'Save color';
+}
+
+/** The color popover shows either the swatches (+ the Custom color button) or the wheel, never both. */
+function showColorCustom(show) {
+  colorSwatchView.classList.toggle('panel-hidden', show);
+  colorCustomView.classList.toggle('panel-hidden', !show);
+  if (show) {
+    [pickHue, pickSat, pickVal] = hexToHsv(normalizeColorHex(color));
+    drawWheel();
+    updateUi();
+  }
+  clearRemovable();
+  if (openPopover === 'color') positionPopover('color');
+}
+
+function initCustomColorUi() {
+  customBack.innerHTML = icon('arrowLeft', 20);
+  customToggle.addEventListener('click', () => showColorCustom(true));
+  customBack.addEventListener('click', () => showColorCustom(false));
+
+  wheelCanvas.addEventListener('pointerdown', (e) => {
+    colorDragging = true;
+    wheelCanvas.setPointerCapture(e.pointerId);
+    pickFromEvent(e);
+  });
+  wheelCanvas.addEventListener('pointermove', (e) => { if (colorDragging) pickFromEvent(e); });
+  wheelCanvas.addEventListener('pointerup', endColorDrag);
+  wheelCanvas.addEventListener('pointercancel', endColorDrag);
+
+  brightSlider.addEventListener('pointerdown', () => { colorDragging = true; });
+  brightSlider.addEventListener('pointerup', endColorDrag);
+  brightSlider.addEventListener('pointercancel', endColorDrag);
+  brightSlider.addEventListener('input', () => {
+    pickVal = Number(brightSlider.value) / 100;
+    applyPicked();
+  });
+
+  saveColorBtn.addEventListener('click', () => {
+    const current = normalizeColorHex(color);
+    if (swatchButtons.has(current)) return;
+    // The PC owns the list; the new swatch arrives with its next state broadcast.
+    send({ t: 'saveColor', color: current });
+  });
 }
 
 function sendSizeThrottled() {
   if (sizeSendTimer) return;
   sizeSendTimer = setTimeout(() => {
     sizeSendTimer = null;
-    if (!followHost) send({ t: 'setSize', size });
+    savePen();
   }, 60);
 }
 
@@ -1920,33 +2260,31 @@ function initDockDrag() {
 
 /** Build the dock once; updateUi() then only toggles state so open popovers/sliders are never rebuilt. */
 function buildDock() {
-  toolsEl.innerHTML = '';
+  toolOptionsEl.innerHTML = '';
   for (const def of TOOL_DEFS) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'dock-btn';
-    b.title = def.label;
+    b.className = 'tool-opt';
     b.setAttribute('aria-label', def.label);
-    b.innerHTML = icon(def.icon, 22);
+    b.innerHTML = `${icon(def.icon, 24)}<span>${def.label}</span>`;
     b.onclick = () => { closePopover(); selectTool(def.name); };
-    toolsEl.appendChild(b);
+    toolOptionsEl.appendChild(b);
     toolButtons.set(def.name, b);
   }
+  // First tap selects the drawing tool (back from the eraser); tapping it again opens the list.
+  toolBtn.onclick = () => {
+    if (tool === 'Eraser') {
+      closePopover();
+      selectTool(lastDrawTool);
+    } else {
+      setPopover('tool');
+    }
+  };
+  eraserBtn.innerHTML = icon('eraser', 22);
+  eraserBtn.onclick = () => { closePopover(); selectTool('Eraser'); };
 
-  swatchesEl.innerHTML = '';
-  for (const c of colors) {
-    const s = document.createElement('button');
-    s.type = 'button';
-    s.className = 'sw';
-    s.style.background = c;
-    s.setAttribute('aria-label', `Color ${c}`);
-    s.innerHTML = icon('check', 18);
-    s.firstElementChild.style.opacity = '0';
-    s.firstElementChild.style.color = isLightColor(c) ? '#111' : '#fff';
-    s.onclick = () => selectColor(c);
-    swatchesEl.appendChild(s);
-    swatchButtons.set(c, s);
-  }
+  renderSwatches();
+  initCustomColorUi();
 
   undoBtn.innerHTML = icon('undo', 22);
   redoBtn.innerHTML = icon('redo', 22);
@@ -1985,6 +2323,8 @@ function buildDock() {
   veilSlider.addEventListener('input', () => {
     screenVeil = Number(veilSlider.value) / 100;
     updateUi();
+    // A capture's veil is drawn here, so it shows instantly; live, the PC renders it into the stream.
+    if (docMode) repaintFrame();
     sendVeilThrottled();
   });
 
@@ -1995,7 +2335,7 @@ function buildDock() {
   });
 
   sizeSlider.addEventListener('pointerdown', () => { sizeDragging = true; });
-  const endSizeDrag = () => { sizeDragging = false; if (!followHost) send({ t: 'setSize', size }); };
+  const endSizeDrag = () => { sizeDragging = false; savePen(); };
   sizeSlider.addEventListener('pointerup', endSizeDrag);
   sizeSlider.addEventListener('pointercancel', endSizeDrag);
   sizeSlider.addEventListener('input', () => {
@@ -2013,11 +2353,21 @@ function buildDock() {
 }
 
 function updateUi() {
+  if (tool !== 'Eraser' && toolButtons.has(tool)) lastDrawTool = tool;
   for (const [name, b] of toolButtons) {
     const active = tool === name;
     b.classList.toggle('active', active);
     b.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
+  const shown = TOOL_DEFS.find(d => d.name === lastDrawTool) || TOOL_DEFS[0];
+  if (toolBtn.dataset.shown !== shown.name) {
+    toolBtn.dataset.shown = shown.name;
+    toolBtn.innerHTML = icon(shown.icon, 22);
+    toolBtn.title = `${shown.label} (tap again for more tools)`;
+  }
+  toolBtn.classList.toggle('active', tool !== 'Eraser');
+  eraserBtn.classList.toggle('active', tool === 'Eraser');
+  eraserBtn.setAttribute('aria-pressed', tool === 'Eraser' ? 'true' : 'false');
   const current = normalizeColorHex(color);
   colorDot.style.background = current;
   for (const [c, s] of swatchButtons) {
@@ -2025,6 +2375,7 @@ function updateUi() {
     s.classList.toggle('selected', selected);
     s.firstElementChild.style.opacity = selected ? '1' : '0';
   }
+  refreshCustomPicker(current);
   const clamped = Math.max(1, Math.min(20, Number(size) || 4));
   if (Number(sizeSlider.value) !== clamped) sizeSlider.value = String(clamped);
   sizeValue.textContent = String(Math.round(clamped));
@@ -2037,6 +2388,8 @@ function updateUi() {
   sizePreview.setAttribute('stroke-width', strokeUnits);
   sizePreview.setAttribute('stroke', current);
 
+  const veilMax = docMode ? DOC_VEIL_MAX : LIVE_VEIL_MAX;
+  if (Number(veilSlider.max) !== veilMax) veilSlider.max = String(veilMax);
   const veilPercent = Math.round(screenVeil * 100);
   if (Number(veilSlider.value) !== veilPercent) veilSlider.value = String(veilPercent);
   veilValue.textContent = veilPercent <= 0 ? 'Off' : `${veilPercent}%`;
@@ -2298,7 +2651,7 @@ function onDocDeleted() {
 /* ---------- Opening and closing a capture ---------- */
 
 function enterDocMode() {
-  liveSaved = { frameBitmap, view: { ...view } };
+  liveSaved = { frameBitmap, view: { ...view }, veil: screenVeil };
   docMode = true;
   hudEl.dataset.mode = 'doc';
   closePopover();
@@ -2343,6 +2696,9 @@ async function openDocument(id, name, { discard = false, keepView = false, silen
   screenW = doc.w / doc.scale;
   screenH = doc.h / doc.scale;
   frameBitmap = image;
+  // The capture is served clean; its veil comes with the strokes and is drawn client-side (see paintFrame).
+  screenVeil = Math.max(0, Math.min(DOC_VEIL_MAX / 100, Number(data.veil) || 0));
+  doc.veil = screenVeil;
 
   clearVectorInkLayers();
   let n = 0;
@@ -2394,7 +2750,10 @@ async function closeDocument(toLibrary) {
   const saved = liveSaved;
   liveSaved = null;
   frameBitmap = saved ? saved.frameBitmap : null;
-  if (saved) Object.assign(view, saved.view);
+  if (saved) {
+    Object.assign(view, saved.view);
+    screenVeil = saved.veil || 0;
+  }
   screenW = liveScreenW;
   screenH = liveScreenH;
   doc.id = null;
@@ -2408,12 +2767,8 @@ async function closeDocument(toLibrary) {
   clearVectorInkLayers();
   hideConflictBanner();
   refreshDocChip();
-  // Back to the live screen: the PC resumes frames (and sends one immediately), and takes our tool settings
-  // again, since they were kept local while editing the capture.
+  // Back to the live screen: the PC resumes frames (and sends one immediately).
   send({ t: 'viewMode', mode: 'live' });
-  send({ t: 'setTool', tool });
-  send({ t: 'setColor', color });
-  send({ t: 'setSize', size });
   updateUi();
   redraw();
   if (toLibrary) openLibrary();
@@ -2493,13 +2848,14 @@ async function runSave(force = false) {
 
   const mark = doc.editSeq;
   const payload = docSerialize();
+  const veil = screenVeil;
   doc.saving = true;
   doc.remoteRevDuringSave = null;
   refreshDocChip();
   const saveStarted = performance.now();
   if (debugLog) log(`save start: ${vectorInk.size} strokes, ${Math.round(payload.length / 1024)} KB`);
   try {
-    const res = await libraryApi.save(doc.id, doc.rev, payload);
+    const res = await libraryApi.save(doc.id, doc.rev, payload, veil);
     if (debugLog) log(`save done in ${Math.round(performance.now() - saveStarted)} ms`);
     doc.rev = res.rev;
     // Edits made while this save was in flight keep the document dirty.
@@ -2682,6 +3038,13 @@ function docHandle(msg) {
       break;
     case 'clear':
       docClear();
+      break;
+    case 'setVeil':
+      // The slider already moved screenVeil (and repainted); this just records that the capture changed.
+      if (Math.abs((Number(msg.value) || 0) - (doc.veil || 0)) > 0.004) {
+        doc.veil = Number(msg.value) || 0;
+        docMarkDirty();
+      }
       break;
     default:
       // strokePoints are already in activeLocal; tool/colour/size/pressure/veil changes stay on this device.

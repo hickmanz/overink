@@ -223,7 +223,43 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: 
 .popover-value { color: var(--text); font-variant-numeric: tabular-nums; }
 .popover-note { margin: 12px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
 
-.swatches { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+/* A dock button that opens a list: a small corner notch hints at it. */
+.dock-btn.has-menu::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  border: 4px solid transparent;
+  border-right-color: currentColor;
+  border-bottom-color: currentColor;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.tool-popover { min-width: 0; max-width: min(400px, calc(100vw - 24px)); }
+.tool-options { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.tool-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 64px;
+  padding: 10px 6px 8px;
+  border: none;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text);
+  font: 600 11.5px var(--font);
+  cursor: pointer;
+  transition: background 0.14s ease, transform 0.1s ease;
+}
+.tool-opt:active { transform: scale(0.94); background: rgba(255, 255, 255, 0.1); }
+.tool-opt.active { background: var(--accent); color: #fff; box-shadow: 0 2px 10px rgba(59, 130, 246, 0.45); }
+/* On a side dock the list is tall rather than wide. */
+#hud[data-edge="left"] .tool-options,
+#hud[data-edge="right"] .tool-options { grid-template-columns: 1fr; }
+
+.swatches { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
 .sw {
   position: relative;
   width: 100%;
@@ -240,6 +276,74 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: 
 .sw:active { transform: scale(0.9); }
 .sw.selected { border-color: #fff; box-shadow: 0 0 0 3px var(--accent); }
 .sw svg { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.5)); }
+.sw { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* Saved colors: press and hold shows a red cross; tapping it removes the color. */
+.sw .sw-remove { display: none; }
+.sw.removable { border-color: #ff5a5a; }
+.sw.removable .sw-remove { display: grid; place-items: center; position: absolute; inset: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.55); color: #ff8a8a; }
+.sw.removable .sw-check { display: none; }
+
+/* Custom color wheel */
+/* The color popover is one aligned block: wheel + current color/Save, brightness, then the swatch grid. */
+#colorPopover { width: 314px; max-width: calc(100vw - 24px); box-sizing: border-box; }
+.custom-picker { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.picker-top { display: flex; align-items: stretch; gap: 14px; }
+/* The global `canvas` rule (the full-screen drawing layers) positions every canvas absolutely; undo that here. */
+.wheel { position: static; inset: auto; flex: none; display: block; width: 168px; height: 168px; touch-action: none; cursor: crosshair; }
+.picker-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.row-btn.custom-row { margin-top: 12px; padding: 4px 4px 0; min-height: 48px; border-top: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0; }
+/* Ring drawn with box-shadow (not a border): a conic-gradient background tiles under a border and shows a seam. */
+.wheel-dot {
+  flex: none;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: conic-gradient(from 90deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000) border-box;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+}
+.wheel-dot::after { content: ""; display: block; width: 100%; height: 100%; border-radius: 50%; background: radial-gradient(circle, #fff 0%, rgba(255, 255, 255, 0) 70%); }
+.custom-title { justify-content: flex-start; gap: 6px; }
+.back-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: -6px 0 -6px -8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.back-btn:active { background: rgba(255, 255, 255, 0.12); }
+.custom-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* Fixed height: the global range rule uses flex:1, which in this column would stretch it over the preview below. */
+.custom-picker input.bright-slider { flex: none; width: 100%; height: 32px; }
+.custom-picker input.bright-slider::-webkit-slider-runnable-track { background: linear-gradient(90deg, #000, var(--bright-to, #fff)); }
+.custom-chip { flex: 1; min-height: 48px; border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.2); }
+.custom-hex { text-align: center; color: var(--muted); font: 12.5px ui-monospace, Menlo, Consolas, monospace; }
+.save-color-btn {
+  flex: none;
+  height: 44px;
+  border: none;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font: 600 14.5px var(--font);
+  cursor: pointer;
+}
+.save-color-btn:active { opacity: 0.7; }
+.save-color-btn:disabled { background: rgba(255, 255, 255, 0.08); color: var(--muted); cursor: default; }
 
 .size-row { display: flex; align-items: center; gap: 14px; }
 .size-preview-wrap {

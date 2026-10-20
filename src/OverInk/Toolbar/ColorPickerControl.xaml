@@ -10,6 +10,9 @@
                    MouseMove="Wheel_MouseMove"
                    MouseLeftButtonUp="Wheel_MouseLeftButtonUp"
                    LostMouseCapture="Wheel_LostMouseCapture" />
+            <!-- The wheel bitmap has a hard, aliased rim (radius ~86 of 88). A WPF Ellipse draws its stroke INSIDE its
+                 bounds, so a full-size ellipse (same as WheelSize) with a 3px stroke covers r 85..88 and hides the jagged edge. -->
+            <Ellipse Width="176" Height="176" Stroke="#FF3F3F46" StrokeThickness="3" IsHitTestVisible="False" />
             <Canvas x:Name="MarkerCanvas" Width="176" Height="176" IsHitTestVisible="False">
                 <Ellipse x:Name="PickerMarker" Width="14" Height="14" Stroke="White" StrokeThickness="2"
                          Fill="Transparent" Visibility="Collapsed" />
@@ -27,5 +30,8 @@
         </Border>
         <TextBlock x:Name="HexLabel" Foreground="{StaticResource MutedTextBrush}" FontFamily="Consolas" FontSize="11"
                    HorizontalAlignment="Center" Margin="0,6,0,0" />
+        <Button x:Name="SaveButton" Content="Save color" Style="{StaticResource SettingsAction}"
+                HorizontalAlignment="Stretch" Margin="0,10,0,0" Click="SaveButton_Click"
+                ToolTip="Add this color to your saved colors" />
     </StackPanel>
 </UserControl>

@@ -8,6 +8,9 @@ public sealed class CaptureLibrary : IDisposable
 {
     public const string SidecarFolderName = ".overink";
 
+    /// <summary>Upper limit for a capture's veil; past this the screenshot is mostly washed out.</summary>
+    public const double MaxVeil = 0.9;
+
     private readonly string _folder;
     private FileSystemWatcher? _watcher;
 
@@ -110,6 +113,7 @@ public sealed class CaptureLibrary : IDisposable
         {
             Consider(SidecarPath(item.SidecarBaseName!, ".orig.png"));
             Consider(SidecarPath(item.SidecarBaseName!, ".isf"));
+            Consider(SidecarPath(item.SidecarBaseName!, ".veil"));
         }
 
         return ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -129,6 +133,35 @@ public sealed class CaptureLibrary : IDisposable
         }
 
         return new StrokeCollection();
+    }
+
+    /// <summary>
+    /// The white-veil opacity (0–<see cref="MaxVeil"/>) stored with a capture; 0 when it has none. Kept as
+    /// a sidecar so the veil stays adjustable instead of being baked into the original screenshot.
+    /// </summary>
+    public double LoadVeil(CaptureItem item)
+    {
+        if (!item.HasEditableSidecars)
+        {
+            return 0;
+        }
+
+        try
+        {
+            var path = SidecarPath(item.SidecarBaseName!, ".veil");
+            if (File.Exists(path) &&
+                double.TryParse(File.ReadAllText(path).Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var veil))
+            {
+                return Math.Clamp(veil, 0, MaxVeil);
+            }
+        }
+        catch (IOException)
+        {
+            // Mid-write by another client; treat as no veil this time.
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -154,7 +187,7 @@ public sealed class CaptureLibrary : IDisposable
     }
 
     /// <summary>Writes new ink and the re-flattened PNG without touching the original image.</summary>
-    public void SaveEdit(CaptureItem item, StrokeCollection strokes, BitmapSource flattened)
+    public void SaveEdit(CaptureItem item, StrokeCollection strokes, BitmapSource flattened, double? veil = null)
     {
         if (!item.HasEditableSidecars)
         {
@@ -163,6 +196,10 @@ public sealed class CaptureLibrary : IDisposable
 
         SaveBitmap(flattened, item.FlattenedPath);
         WriteStrokes(item.SidecarBaseName!, strokes);
+        if (veil is { } value)
+        {
+            WriteVeil(item.SidecarBaseName!, value);
+        }
     }
 
     /// <summary>
@@ -170,7 +207,7 @@ public sealed class CaptureLibrary : IDisposable
     /// coordinates, e.g. what was drawn on the overlay) is stored as editable ink on top of it, and the
     /// flattened PNG shows both. Must run on the UI thread when ink is given (flattening renders WPF visuals).
     /// </summary>
-    public CaptureItem CreateFromCapture(BitmapSource capture, StrokeCollection? ink = null)
+    public CaptureItem CreateFromCapture(BitmapSource capture, StrokeCollection? ink = null, double veil = 0)
     {
         var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         var baseName = $"Capture_{stamp}";
@@ -182,11 +219,13 @@ public sealed class CaptureLibrary : IDisposable
         }
 
         ink ??= new StrokeCollection();
-        var flattened = ink.Count == 0 ? capture : CaptureRenderer.Flatten(capture, ink);
+        veil = Math.Clamp(veil, 0, MaxVeil);
+        var flattened = ink.Count == 0 && veil <= 0 ? capture : CaptureRenderer.Flatten(capture, ink, veil);
 
         SaveBitmap(flattened, flattenedPath);
         WriteSidecarOriginal(baseName, capture);
         WriteStrokes(baseName, ink);
+        WriteVeil(baseName, veil);
 
         return new CaptureItem
         {
@@ -230,7 +269,8 @@ public sealed class CaptureLibrary : IDisposable
         CaptureItem item,
         BitmapSource original,
         StrokeCollection strokes,
-        BitmapSource flattened)
+        BitmapSource flattened,
+        double veil = 0)
     {
         SaveBitmap(flattened, item.FlattenedPath);
 
@@ -238,6 +278,7 @@ public sealed class CaptureLibrary : IDisposable
         {
             WriteSidecarOriginal(item.SidecarBaseName!, original);
             WriteStrokes(item.SidecarBaseName!, strokes);
+            WriteVeil(item.SidecarBaseName!, veil);
         }
     }
 
@@ -264,6 +305,7 @@ public sealed class CaptureLibrary : IDisposable
             var oldBase = item.SidecarBaseName!;
             MoveIfExists(SidecarPath(oldBase, ".orig.png"), SidecarPath(newBaseName, ".orig.png"));
             MoveIfExists(SidecarPath(oldBase, ".isf"), SidecarPath(newBaseName, ".isf"));
+            MoveIfExists(SidecarPath(oldBase, ".veil"), SidecarPath(newBaseName, ".veil"));
             newSidecar = newBaseName;
         }
 
@@ -287,6 +329,12 @@ public sealed class CaptureLibrary : IDisposable
         {
             var orig = SidecarPath(item.SidecarBaseName!, ".orig.png");
             var strokes = SidecarPath(item.SidecarBaseName!, ".isf");
+            var veil = SidecarPath(item.SidecarBaseName!, ".veil");
+            if (File.Exists(veil))
+            {
+                File.Delete(veil);
+            }
+
             if (File.Exists(orig))
             {
                 File.Delete(orig);
@@ -306,6 +354,23 @@ public sealed class CaptureLibrary : IDisposable
 
     private void WriteSidecarOriginal(string baseName, BitmapSource original) =>
         SaveBitmap(original, SidecarPath(baseName, ".orig.png"));
+
+    private void WriteVeil(string baseName, double veil)
+    {
+        var path = SidecarPath(baseName, ".veil");
+        veil = Math.Clamp(veil, 0, MaxVeil);
+        if (veil < 0.005)
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            return;
+        }
+
+        File.WriteAllText(path, veil.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+    }
 
     private void WriteStrokes(string baseName, StrokeCollection strokes)
     {

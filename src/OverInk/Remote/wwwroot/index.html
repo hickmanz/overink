@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0f1115" />
   <title>OverInk Remote</title>
-  <link rel="stylesheet" href="styles.css?v=17" />
+  <link rel="stylesheet" href="styles.css?v=18" />
 </head>
 <body>
   <div id="root">
@@ -67,8 +67,40 @@
     <div id="hud" data-edge="bottom" data-mode="live" data-lib="0">
       <!-- Popovers sit beside the dock; only one is open at a time -->
       <div id="colorPopover" class="ui popover panel-hidden" aria-hidden="true">
-        <div class="popover-title">Color</div>
-        <div id="swatches" class="swatches"></div>
+        <!-- Swatches view (default) -->
+        <div id="colorSwatchView">
+          <div class="popover-title">Color</div>
+          <div id="swatches" class="swatches"></div>
+          <button type="button" id="customToggle" class="row-btn custom-row">
+            <span class="wheel-dot" aria-hidden="true"></span>
+            <span class="row-label">Custom color</span>
+          </button>
+        </div>
+
+        <!-- Custom color view: replaces the swatches and the button above until you go back -->
+        <div id="colorCustomView" class="panel-hidden">
+          <div class="popover-title custom-title">
+            <button type="button" id="customBack" class="back-btn" aria-label="Back to swatches"></button>
+            <span>Custom color</span>
+          </div>
+          <div class="custom-picker">
+            <div class="picker-top">
+              <canvas id="wheelCanvas" class="wheel" aria-label="Color wheel"></canvas>
+              <div class="picker-side">
+                <span id="customPreview" class="custom-chip" aria-label="Current color"></span>
+                <span id="customHex" class="custom-hex">#E53935</span>
+                <button type="button" id="saveColorBtn" class="save-color-btn">Save color</button>
+              </div>
+            </div>
+            <div class="custom-label">Brightness <span id="brightValue" class="popover-value">100%</span></div>
+            <input id="brightSlider" class="bright-slider" type="range" min="0" max="100" step="1" value="100" aria-label="Brightness" />
+          </div>
+        </div>
+      </div>
+
+      <div id="toolPopover" class="ui popover tool-popover panel-hidden" aria-hidden="true">
+        <div class="popover-title">Draw with</div>
+        <div id="toolOptions" class="tool-options"></div>
       </div>
 
       <div id="sizePopover" class="ui popover panel-hidden" aria-hidden="true">
@@ -89,7 +121,7 @@
           <span id="veilIcon" class="size-preview-wrap"></span>
           <input id="veilSlider" type="range" min="0" max="60" step="5" value="0" aria-label="Screen veil" />
         </div>
-        <p class="popover-note">Washes the screen toward white, under your ink, so sketches stand out.</p>
+        <p class="popover-note">Washes the screen toward white, under your ink, so sketches stand out. On a capture it is saved with it, and can be changed later.</p>
       </div>
 
       <div id="settingsPanel" class="ui popover panel-hidden" aria-hidden="true">
@@ -115,12 +147,16 @@
       <div id="dock" class="ui dock" role="toolbar" aria-label="Drawing tools">
         <button type="button" id="dockGrip" class="dock-btn grip" aria-label="Move toolbar" title="Drag to move the toolbar to another edge"></button>
         <span class="divider"></span>
-        <div id="tools" class="group"></div>
+        <div id="tools" class="group">
+          <!-- Pen / line / arrow / rectangle / ellipse live behind this one button; it shows the current one -->
+          <button type="button" id="toolBtn" class="dock-btn has-menu" aria-label="Drawing tool" title="Drawing tool" aria-haspopup="true"></button>
+          <button type="button" id="eraserBtn" class="dock-btn" aria-label="Eraser" title="Eraser"></button>
+        </div>
         <span class="divider"></span>
         <div class="group">
           <button type="button" id="colorBtn" class="dock-btn" aria-label="Color" title="Color"><span id="colorDot" class="color-dot"></span></button>
           <button type="button" id="sizeBtn" class="dock-btn" aria-label="Stroke width" title="Stroke width"><svg class="stroke-icon" viewBox="0 0 28 24" width="28" height="24" fill="none" stroke-linecap="round" aria-hidden="true"><path id="sizeDot" d="M5 17C9 5 15 21 23 7" stroke="currentColor" stroke-width="3" /></svg></button>
-          <button type="button" id="veilBtn" class="dock-btn live-only" aria-label="Screen veil" title="Screen veil"></button>
+          <button type="button" id="veilBtn" class="dock-btn" aria-label="Screen veil" title="Screen veil"></button>
         </div>
         <span class="divider"></span>
         <div class="group">
@@ -144,6 +180,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=31"></script>
+  <script type="module" src="app.js?v=33"></script>
 </body>
 </html>

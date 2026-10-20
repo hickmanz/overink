@@ -506,6 +506,12 @@ public sealed class RemoteSketchServer : IDisposable
             case "setColor":
                 ApplySetColor(json);
                 break;
+            case "saveColor":
+                ApplySavedColorChange(json, add: true);
+                break;
+            case "removeColor":
+                ApplySavedColorChange(json, add: false);
+                break;
             case "setSize":
                 ApplySetSize(json);
                 break;
@@ -619,6 +625,28 @@ public sealed class RemoteSketchServer : IDisposable
             _session.SetColor(ColorHex.Parse(msg.Color));
             _session.PersistSettings();
             BroadcastState();
+        });
+    }
+
+    /// <summary>Adds/removes a saved custom color. The palette's Changed event saves settings and rebroadcasts state to every client.</summary>
+    private void ApplySavedColorChange(string json, bool add)
+    {
+        var msg = RemoteJson.Deserialize<RemoteSetColor>(json);
+        if (msg is null || !ColorHex.TryParse(msg.Color, out var color))
+        {
+            return;
+        }
+
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            if (add)
+            {
+                _session.CustomColors.Add(color);
+            }
+            else
+            {
+                _session.CustomColors.Remove(ColorHex.ToRgbHex(color));
+            }
         });
     }
 
@@ -885,7 +913,8 @@ public sealed class RemoteSketchServer : IDisposable
             stream.Height,
             _settings.Current.RemoteRegionEnabled,
             _session.PressureSensitive,
-            _session.ScreenVeil);
+            _session.ScreenVeil,
+            _session.CustomColors.Colors.ToArray());
     }
 
     private string PickColor()

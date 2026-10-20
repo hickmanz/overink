@@ -249,6 +249,42 @@ public sealed class RemoteLibraryTests : IDisposable
         Assert.True(item.HasEditableSidecars);
     }
 
+    [Fact]
+    public void Veil_is_stored_beside_the_capture_and_never_baked_into_the_original()
+    {
+        using var library = new CaptureLibrary(_folder);
+        var result = RunSta(() =>
+        {
+            Pixel Read(BitmapSource source)
+            {
+                var px = new byte[4];
+                new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0).CopyPixels(new Int32Rect(5, 5, 1, 1), px, 4, 0);
+                return new Pixel(px[2], px[1], px[0]);
+            }
+
+            var created = library.CreateFromCapture(Solid(20, 20, Colors.Black), veil: 0.5);
+            var veiled = Read(LoadPng(created.FlattenedPath));
+            var original = Read(library.LoadOriginal(created));
+            var storedVeil = library.LoadVeil(created);
+
+            // Editing the veil re-flattens from the clean original, so it can go up, down or away.
+            var lighter = CaptureRenderer.Flatten(library.LoadOriginal(created), library.LoadStrokes(created), 0.25);
+            var cleared = CaptureRenderer.Flatten(library.LoadOriginal(created), library.LoadStrokes(created), 0);
+
+            library.SaveDocument(created, library.LoadOriginal(created), library.LoadStrokes(created), cleared, 0);
+            var afterClear = library.LoadVeil(created);
+
+            return (veiled, original, storedVeil, Read(lighter), Read(cleared), afterClear);
+        });
+
+        Assert.InRange(result.veiled.R, 120, 135);
+        Assert.Equal(0, result.original.R);
+        Assert.Equal(0.5, result.storedVeil, 3);
+        Assert.InRange(result.Item4.R, 60, 68);
+        Assert.Equal(0, result.Item5.R);
+        Assert.Equal(0, result.afterClear);
+    }
+
     private readonly record struct Pixel(byte R, byte G, byte B);
 
     private static BitmapSource LoadPng(string path)
@@ -420,6 +456,31 @@ public sealed class RemoteLibraryTests : IDisposable
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
     }
 
+    [Fact]
+    public void Veil_follows_a_rename_is_kept_by_saves_that_omit_it_and_goes_with_delete()
+    {
+        using var library = new CaptureLibrary(_folder);
+        var (renamed, veilAfterRename, veilAfterOmit, veilAfterSet) = RunSta(() =>
+        {
+            var created = library.CreateFromCapture(Solid(20, 20, Colors.Black), veil: 0.4);
+            var moved = library.Rename(created, "veiled")!;
+            var afterRename = library.LoadVeil(moved);
+
+            // The tablet's save path: no veil given means the stored one stays.
+            library.SaveEdit(moved, new StrokeCollection(), Solid(20, 20, Colors.Black));
+            var afterOmit = library.LoadVeil(moved);
+
+            library.SaveEdit(moved, new StrokeCollection(), Solid(20, 20, Colors.Black), 0.8);
+            return (moved, afterRename, afterOmit, library.LoadVeil(moved));
+        });
+
+        Assert.Equal(0.4, veilAfterRename, 3);
+        Assert.Equal(0.4, veilAfterOmit, 3);
+        Assert.Equal(0.8, veilAfterSet, 3);
+
+        library.Delete(renamed);
+        Assert.Empty(Directory.EnumerateFiles(_folder, "*.veil", SearchOption.AllDirectories));
+    }
     [Fact]
     public async Task Http_save_rejects_malformed_ink()
     {

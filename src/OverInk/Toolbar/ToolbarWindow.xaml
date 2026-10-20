@@ -68,6 +68,51 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- Compact tools: one button for the current drawing tool (tap again for the list) + the eraser -->
+                    <StackPanel x:Name="ToolMenuGroup" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+                        <ToggleButton x:Name="ShapeToolButton" Style="{StaticResource DockToolToggle}"
+                                      Click="ShapeToolButton_Click">
+                            <Grid Width="34" Height="34">
+                                <ContentControl x:Name="ShapeToolIcon" Style="{StaticResource LucideIcon}"
+                                                Tag="{StaticResource IconPen}" />
+                                <!-- Corner notch: this button opens a list -->
+                                <Path Data="M0,5 L5,5 L5,0 Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                      Opacity="0.6" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                      Margin="0,0,5,5" IsHitTestVisible="False" />
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="EraserQuickButton" Style="{StaticResource DockToolToggle}" ToolTip="Eraser"
+                                      Click="ToolButton_Click" Tag="Eraser">
+                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconEraser}" />
+                        </ToggleButton>
+                        <Popup x:Name="ToolPopup" PlacementTarget="{Binding ElementName=ShapeToolButton}"
+                               Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"
+                               Closed="ToolPopup_Closed">
+                            <Border Style="{StaticResource PopoverCard}" Padding="8">
+                                <StackPanel>
+                                    <TextBlock Text="DRAW WITH" Style="{StaticResource SectionLabel}" Margin="4,2,0,8" />
+                                    <StackPanel x:Name="ToolOptionsPanel" Orientation="Horizontal">
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Pen" Click="ToolButton_Click" Tag="Pen">
+                                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconPen}" />
+                                        </ToggleButton>
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Line" Click="ToolButton_Click" Tag="Line">
+                                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconLine}" />
+                                        </ToggleButton>
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Arrow" Click="ToolButton_Click" Tag="Arrow">
+                                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconArrow}" />
+                                        </ToggleButton>
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Rectangle" Click="ToolButton_Click" Tag="Rectangle">
+                                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconRectangle}" />
+                                        </ToggleButton>
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Ellipse" Click="ToolButton_Click" Tag="Ellipse">
+                                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconEllipse}" />
+                                        </ToggleButton>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
+                    </StackPanel>
+
                     <Border Style="{StaticResource ToolbarDivider}" />
 
                     <!-- Color + stroke width: compact buttons that open popovers (same as the iPad dock) -->
@@ -91,11 +136,14 @@
                                Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"
                                Opened="ColorPopup_Opened" Closed="ColorPopup_Closed">
                             <Border Style="{StaticResource PopoverCard}">
-                                <StackPanel Width="224">
+                                <!-- 7 swatches x 36 (30 + 3px margin each side): narrower and the selected halo is clipped -->
+                                <StackPanel Width="252">
                                     <TextBlock Text="COLOR" Style="{StaticResource SectionLabel}" />
                                     <UniformGrid x:Name="SwatchPanel" Columns="7" />
                                     <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,10" />
-                                    <Grid>
+                                    <!-- Transparent background so the whole row (not just the wheel) takes the click -->
+                                    <Grid Background="Transparent" Cursor="Hand" MinHeight="32"
+                                          MouseLeftButtonUp="CustomColorRow_Click">
                                         <ToggleButton x:Name="CustomColorButton" Style="{StaticResource ColorWheelButton}"
                                                       HorizontalAlignment="Left" Margin="4,0,0,0"
                                                       Click="CustomColorButton_Click" />
@@ -103,7 +151,8 @@
                                                    Margin="38,0,0,0" VerticalAlignment="Center" />
                                     </Grid>
                                     <toolbar:ColorPickerControl x:Name="ColorPicker" Visibility="Collapsed" Margin="0,12,0,0"
-                                                                HorizontalAlignment="Center" ColorChanged="ColorPicker_ColorChanged" />
+                                                                HorizontalAlignment="Center" ColorChanged="ColorPicker_ColorChanged"
+                                                                SaveRequested="ColorPicker_SaveRequested" />
                                 </StackPanel>
                             </Border>
                         </Popup>
@@ -453,6 +502,58 @@
                                               AutomationProperties.Name="Copy captures to the clipboard automatically"
                                               Checked="AutoCopy_Changed" Unchecked="AutoCopy_Changed" />
                                 </Grid>
+
+                                <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
+
+                                <Grid ToolTip="Turns draw mode off after a capture on this PC, so the mouse works normally again (captures from the tablet never change it)">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Exit draw mode on capture" Style="{StaticResource RowTitle}" />
+                                        <TextBlock Text="Stop drawing once a capture is taken" Style="{StaticResource RowDesc}" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="ExitDrawOnCaptureCheck" Grid.Column="1" Margin="12,0,0,0"
+                                              Style="{StaticResource SwitchCheckBox}"
+                                              AutomationProperties.Name="Exit draw mode on capture"
+                                              Checked="CaptureBehavior_Changed" Unchecked="CaptureBehavior_Changed" />
+                                </Grid>
+
+                                <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
+
+                                <Grid ToolTip="Wipes your on-screen drawing after a capture on this PC. The capture keeps the ink as editable strokes (captures from the tablet never change it)">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Clear drawing after capture" Style="{StaticResource RowTitle}" />
+                                        <TextBlock Text="Start the next sketch on a clean screen" Style="{StaticResource RowDesc}" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="ClearAfterCaptureCheck" Grid.Column="1" Margin="12,0,0,0"
+                                              Style="{StaticResource SwitchCheckBox}"
+                                              AutomationProperties.Name="Clear drawing after capture"
+                                              Checked="CaptureBehavior_Changed" Unchecked="CaptureBehavior_Changed" />
+                                </Grid>
+
+                                <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
+
+                                <Grid ToolTip="Leaves this toolbar in the picture instead of hiding it for the instant of the grab. It never appears in the stream sent to the tablet.">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Capture toolbar in screen grabs" Style="{StaticResource RowTitle}" />
+                                        <TextBlock Text="Off = the toolbar is hidden for the grab" Style="{StaticResource RowDesc}" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="ToolbarInGrabsCheck" Grid.Column="1" Margin="12,0,0,0"
+                                              Style="{StaticResource SwitchCheckBox}"
+                                              AutomationProperties.Name="Capture toolbar in screen grabs"
+                                              Checked="CaptureBehavior_Changed" Unchecked="CaptureBehavior_Changed" />
+                                </Grid>
+
                                 <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
 
                                 <Grid ToolTip="Pass-through hides the toolbar until you turn draw mode on (shortcut still works)">
@@ -468,6 +569,23 @@
                                               Style="{StaticResource SwitchCheckBox}"
                                               AutomationProperties.Name="Hide toolbar when not drawing"
                                               Checked="HideToolbarWhenNotDrawing_Changed" Unchecked="HideToolbarWhenNotDrawing_Changed" />
+                                </Grid>
+
+                                <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />
+
+                                <Grid ToolTip="On: pen, line, arrow, rectangle and ellipse share one button with a picker. Off: each has its own button.">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Compact tools" Style="{StaticResource RowTitle}" />
+                                        <TextBlock Text="Fold pen and shapes into one button" Style="{StaticResource RowDesc}" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="CompactToolsCheck" Grid.Column="1" Margin="12,0,0,0"
+                                              Style="{StaticResource SwitchCheckBox}"
+                                              AutomationProperties.Name="Compact toolbar tools"
+                                              Checked="CompactTools_Changed" Unchecked="CompactTools_Changed" />
                                 </Grid>
 
                                 <Border Height="1" Background="{StaticResource BorderBrushMuted}" Margin="0,14" />

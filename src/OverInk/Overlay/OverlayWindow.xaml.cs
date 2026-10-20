@@ -32,6 +32,7 @@ public partial class OverlayWindow : Window
     private HwndSource? _hwndSource;
     private CaptureRegionOutlineWindow? _regionOutline;
     private Rect? _regionOutlineDips;
+    private PenCursorWindow? _penCursor;
 
     public OverlayWindow(SketchSession session, IStrokeSource remoteStrokeSource)
     {
@@ -48,6 +49,11 @@ public partial class OverlayWindow : Window
             StrokeSmoother.Apply(e.Stroke);
             BumpInkRevision();
         };
+        // The pen draws its own cursor (see PenCursorWindow) so thin strokes never make the pointer vanish.
+        InkSurface.PreviewMouseMove += (_, e) => MovePenCursor(e.GetPosition(InkSurface));
+        InkSurface.PreviewStylusMove += (_, e) => MovePenCursor(e.GetPosition(InkSurface));
+        InkSurface.MouseLeave += (_, _) => HidePenCursor();
+        InkSurface.StylusLeave += (_, _) => HidePenCursor();
         ShapeLayer.MouseLeftButtonDown += OnShapeMouseDown;
         ShapeLayer.MouseMove += OnShapeMouseMove;
         ShapeLayer.MouseLeftButtonUp += OnShapeMouseUp;
@@ -57,8 +63,16 @@ public partial class OverlayWindow : Window
         {
             _hwndSource?.RemoveHook(HitTestHook);
             _regionOutline?.Close();
+            _penCursor?.Close();
         };
-        IsVisibleChanged += (_, _) => SyncRegionOutline();
+        IsVisibleChanged += (_, _) =>
+        {
+            SyncRegionOutline();
+            if (!IsVisible)
+            {
+                HidePenCursor();
+            }
+        };
 
         _session.Changed += ApplySession;
         _session.UndoStack.Changed += (_, _) => BumpInkRevision();
@@ -184,20 +198,35 @@ public partial class OverlayWindow : Window
         }
     }
 
+    /// <summary>Opacity (0–1) of the white veil as currently seen on screen; 0 when it isn't showing.</summary>
+    public double VisibleVeilOpacity => ScreenVeil.Visibility == Visibility.Visible ? ScreenVeil.Opacity : 0;
+
     /// <summary>
-    /// Hides the drawn ink and shapes (the white veil stays) until the returned object is disposed, so a screen
-    /// capture shows the clean screen and the ink can be saved separately as editable strokes.
+    /// Hides the drawn ink, shapes and white veil until the returned object is disposed, so a screen capture
+    /// shows the clean screen. The ink is saved separately as editable strokes and the veil as a value
+    /// (<see cref="VisibleVeilOpacity"/>), so both stay adjustable in the editor.
     /// </summary>
     public IDisposable HideInkForCapture()
     {
         var inkVisibility = InkSurface.Visibility;
         var shapeVisibility = ShapeLayer.Visibility;
+        var veilVisibility = ScreenVeil.Visibility;
         InkSurface.Visibility = Visibility.Hidden;
         ShapeLayer.Visibility = Visibility.Hidden;
+        if (veilVisibility == Visibility.Visible)
+        {
+            ScreenVeil.Visibility = Visibility.Hidden;
+        }
+
         return new RestoreOnDispose(() =>
         {
             InkSurface.Visibility = inkVisibility;
             ShapeLayer.Visibility = shapeVisibility;
+            // Only put the veil back if nothing changed it while hidden.
+            if (ScreenVeil.Visibility == Visibility.Hidden)
+            {
+                ScreenVeil.Visibility = veilVisibility;
+            }
         });
     }
 
@@ -315,8 +344,47 @@ public partial class OverlayWindow : Window
         };
         InkSurface.DefaultDrawingAttributes = attributes;
 
+        // With the pen the system pointer is replaced by the ring/reticle window.
+        var penCursor = UsesPenCursor;
+        InkSurface.UseCustomCursor = penCursor;
+        if (penCursor)
+        {
+            InkSurface.Cursor = Cursors.None;
+        }
+        else
+        {
+            InkSurface.ClearValue(FrameworkElement.CursorProperty);
+            HidePenCursor();
+        }
+
         UpdateVeil();
     }
+
+    private bool UsesPenCursor => _session.Mode == InteractionMode.Draw && _session.Tool == SketchTool.Pen;
+
+    private void MovePenCursor(Point position)
+    {
+        if (!UsesPenCursor)
+        {
+            HidePenCursor();
+            return;
+        }
+
+        var screen = new Point(Left + position.X, Top + position.Y);
+
+        // Over the toolbar the normal pointer is needed (the toolbar is click-through for the overlay there).
+        if (_toolbarWindow is { IsVisible: true } toolbar &&
+            new Rect(toolbar.Left, toolbar.Top, toolbar.ActualWidth, toolbar.ActualHeight).Contains(screen))
+        {
+            HidePenCursor();
+            return;
+        }
+
+        _penCursor ??= new PenCursorWindow();
+        _penCursor.ShowAt(screen, _session.PenThickness);
+    }
+
+    private void HidePenCursor() => _penCursor?.HideCursor();
 
     private bool _remoteActive;
     private bool _editorOpen;
