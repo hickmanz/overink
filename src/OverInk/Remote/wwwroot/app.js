@@ -179,7 +179,9 @@ const RULER_WIDTH = 128;
 /** Far longer than any screen at any zoom, so both ends are always off-screen: it reads as an endless straight edge. */
 const RULER_LENGTH = 100000;
 /** How far (screen px) the dark grey edge reaches outside each side of the ruler, fading out as it goes. */
-const RULER_EDGE_SHADE_PX = 7;
+const RULER_EDGE_SHADE_PX = 3.5;
+/** Thickness (screen px) of the light rim line along each edge. */
+const RULER_RIM_PX = 1.25;
 /** Pen-down within this many screen px of an edge locks the stroke to it. */
 const RULER_SNAP_PX = 48;
 /** Both fingers must land within this many screen px of the ruler body to move it (otherwise they move the page). */
@@ -945,25 +947,29 @@ function drawRuler(ctx) {
   // Dark grey edge just outside each side of the sheet, feathered outward so it is blurred. A gradient band is
   // far cheaper than canvas blur, which matters because this layer is repainted on every frame of a gesture.
   const shade = RULER_EDGE_SHADE_PX * px;
+  // The rim line sits entirely outside the body (its inner side flush with the ruler's edge), and the shadow
+  // starts just beyond it, so nothing drawn at the edge overlaps the ruler itself.
+  const rim = RULER_RIM_PX * px;
   for (const side of [-1, 1]) {
-    const edge = side * hw;
+    const edge = side * (hw + rim);
     const shadow = ctx.createLinearGradient(0, edge, 0, edge + side * shade);
-    shadow.addColorStop(0, 'rgba(0, 0, 0, 0.24)');
-    shadow.addColorStop(0.3, 'rgba(0, 0, 0, 0.2)');
+    shadow.addColorStop(0, 'rgba(0, 0, 0, 0.12)');
+    shadow.addColorStop(0.3, 'rgba(0, 0, 0, 0.1)');
     shadow.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = shadow;
     ctx.fillRect(-hl, side > 0 ? edge : edge - shade, ruler.len, shade);
   }
 
   // Crisp light rim along each edge of the sheet (a light grey, not pure white).
+  const rimCenter = hw + rim / 2;
   ctx.beginPath();
-  ctx.moveTo(-hl, -hw);
-  ctx.lineTo(hl, -hw);
-  ctx.moveTo(-hl, hw);
-  ctx.lineTo(hl, hw);
+  ctx.moveTo(-hl, -rimCenter);
+  ctx.lineTo(hl, -rimCenter);
+  ctx.moveTo(-hl, rimCenter);
+  ctx.lineTo(hl, rimCenter);
   ctx.lineCap = 'butt';
-  ctx.strokeStyle = 'rgba(222, 222, 222, 0.88)';
-  ctx.lineWidth = 1.25 * px;
+  ctx.strokeStyle = 'rgba(180, 180, 180, 0.85)';
+  ctx.lineWidth = rim;
   ctx.stroke();
   ctx.restore();
 }
