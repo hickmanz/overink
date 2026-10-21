@@ -40,7 +40,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: 
 .panel-hidden { display: none !important; }
 
 /* ---------- Glass surfaces ---------- */
-.dock, .popover, .chip, #log {
+.dock, .popover, .chip, .sel-bar, #log {
   background: var(--glass);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
   backdrop-filter: blur(22px) saturate(160%);
@@ -143,6 +143,18 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: 
 .snap-zone[data-edge="left"] { left: calc(var(--safe-l) + 8px); top: 14%; bottom: 14%; width: 76px; }
 .snap-zone[data-edge="right"] { right: calc(var(--safe-r) + 8px); top: 14%; bottom: 14%; width: 76px; }
 .snap-zone[data-edge="bottom"] { bottom: calc(var(--safe-b) + 8px); left: 50%; width: min(680px, 80vw); height: 76px; transform: translateX(-50%); }
+
+/* Select tool: delete button that floats above the selection (positioned from app.js) */
+.sel-bar {
+  position: fixed;
+  z-index: 7;
+  /* #hud ignores the pointer so the drawing surface underneath gets it; the bar has to opt back in. */
+  pointer-events: auto;
+  padding: 4px;
+  border-radius: 20px;
+  transform: translateX(-50%);
+  touch-action: none;
+}
 
 .dock-btn {
   position: relative;
@@ -455,8 +467,7 @@ input[type="range"]::-webkit-slider-thumb {
 /* ---------- Live vs. document (library) mode ---------- */
 #hud[data-mode="doc"] .live-only { display: none !important; }
 #hud[data-mode="live"] .doc-only { display: none !important; }
-#hud[data-lib="0"] .lib-only { display: none !important; }
-.dock-btn.busy { opacity: 0.55; pointer-events: none; animation: pulse 0.9s ease-in-out infinite; }
+#hud[data-lib="0"] .lib-only { display: none !important; }.dock-btn.busy { opacity: 0.55; pointer-events: none; animation: pulse 0.9s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.25; } }
 
 /* Capture name + save state while editing a library capture */

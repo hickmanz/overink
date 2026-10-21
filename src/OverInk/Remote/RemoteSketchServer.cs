@@ -31,7 +31,6 @@ public sealed class RemoteSketchServer : IDisposable
     private readonly OverlayWindow _overlay;
     private readonly FrameStreamer _frameStreamer;
     private readonly RemoteLibraryService _library;
-
     private WebApplication? _app;
     private readonly ConcurrentDictionary<string, RemoteConnectedClient> _clients = new();
     private readonly string[] _participantColors = ["#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA", "#00ACC1", "#FDD835", "#6D4C41"];
@@ -599,7 +598,7 @@ public sealed class RemoteSketchServer : IDisposable
     private void ApplySetTool(string json)
     {
         var msg = RemoteJson.Deserialize<RemoteSetTool>(json);
-        if (msg is null || !Enum.TryParse<SketchTool>(msg.Tool, true, out var tool))
+        if (msg is null || !Enum.TryParse<SketchTool>(msg.Tool, true, out var tool) || tool == SketchTool.Select)
         {
             return;
         }
@@ -804,7 +803,7 @@ public sealed class RemoteSketchServer : IDisposable
     private async Task DispatchShapePreviewAsync(RemoteConnectedClient client, string json)
     {
         var msg = RemoteJson.Deserialize<RemoteShapePreview>(json);
-        if (msg is null || !Enum.TryParse<SketchTool>(msg.Tool, true, out var tool))
+        if (msg is null || !Enum.TryParse<SketchTool>(msg.Tool, true, out var tool) || tool == SketchTool.Select)
         {
             return;
         }
@@ -821,7 +820,7 @@ public sealed class RemoteSketchServer : IDisposable
     private async Task DispatchShapeCommitAsync(RemoteConnectedClient client, string json)
     {
         var msg = RemoteJson.Deserialize<RemoteShapeCommit>(json);
-        if (msg is null || !Enum.TryParse<SketchTool>(msg.Tool, true, out var tool))
+        if (msg is null || !Enum.TryParse<SketchTool>(msg.Tool, true, out var tool) || tool == SketchTool.Select)
         {
             return;
         }

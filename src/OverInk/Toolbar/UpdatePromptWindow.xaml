@@ -10,6 +10,13 @@
         Background="#FF101012">
     <StackPanel Margin="22,18,22,18" Width="380">
         <TextBlock x:Name="MessageText" TextWrapping="Wrap" Foreground="{StaticResource TextBrush}" FontSize="13" LineHeight="20" />
+        <StackPanel x:Name="NotesPanel" Margin="0,14,0,0" Visibility="Collapsed">
+            <TextBlock Text="WHAT'S NEW" Style="{StaticResource SectionLabel}" />
+            <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+                <TextBlock x:Name="NotesText" TextWrapping="Wrap" Foreground="{StaticResource TextBrush}"
+                           FontSize="12" LineHeight="18" />
+            </ScrollViewer>
+        </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
             <Button x:Name="CancelButton" Content="Not now" IsCancel="True" Style="{StaticResource SettingsAction}" MinWidth="88" />
             <Button x:Name="ConfirmButton" Content="Update now" IsDefault="True" Click="Confirm_Click"

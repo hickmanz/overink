@@ -7,7 +7,9 @@ public enum SketchTool
     Arrow,
     Rectangle,
     Ellipse,
-    Eraser
+    Eraser,
+    /// <summary>Capture editor only: pick, move, recolor, resize or delete existing ink.</summary>
+    Select
 }
 
 public enum InteractionMode

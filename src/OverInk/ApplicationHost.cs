@@ -368,7 +368,7 @@ public sealed class ApplicationHost : IDisposable
     private void CaptureRegionFromHotkey() => CaptureToEditor(CaptureRequestKind.PickRegion);
 
     /// <summary>Puts the capture on the clipboard (image + file) when "auto-copy" is on. Never throws.</summary>
-    private void AutoCopyToClipboard(BitmapSource bitmap, StrokeCollection ink, double veil, CaptureItem item)
+    private void AutoCopyToClipboard(BitmapSource flattened, CaptureItem item)
     {
         _lastCaptureCopied = false;
         if (!_settings.Current.AutoCopyCaptures)
@@ -378,8 +378,7 @@ public sealed class ApplicationHost : IDisposable
 
         try
         {
-            var flattened = ink.Count == 0 && veil <= 0 ? bitmap : CaptureRenderer.Flatten(bitmap, ink, veil);
-            ImageTransfer.SetClipboardWithRetry(ImageTransfer.BuildDataObject(flattened, item.FlattenedPath));
+            ImageTransfer.SetClipboardWithRetry(ImageTransfer.BuildDataObjectFromSavedFile(flattened, item.FlattenedPath));
             _lastCaptureCopied = true;
         }
         catch (Exception ex)
@@ -412,8 +411,8 @@ public sealed class ApplicationHost : IDisposable
         }
 
         var (bitmap, ink, veil) = CaptureScreenWithInk(pixelBounds, geometry);
-        var item = _captureLibrary.CreateFromCapture(bitmap, ink, veil);
-        AutoCopyToClipboard(bitmap, ink, veil, item);
+        var item = _captureLibrary.CreateFromCapture(bitmap, ink, veil, out var flattened);
+        AutoCopyToClipboard(flattened, item);
         return item;
     }
 
@@ -818,7 +817,7 @@ public sealed class ApplicationHost : IDisposable
         var launched = false;
         try
         {
-            var result = await _updates.CheckAsync();
+            var result = await _updates.CheckAsync(_settings.Current.IncludeBetaUpdates);
             if (_disposed)
             {
                 return;
@@ -855,7 +854,8 @@ public sealed class ApplicationHost : IDisposable
                 var install = Ask(
                     $"OverInk {offer.Version} is available. You're running {AppVersion.Current}.\n\nOverInk will close, install the update, and reopen. If Windows asks, choose Run anyway or Yes.",
                     "Update now",
-                    "Not now");
+                    "Not now",
+                    offer.Notes);
                 if (!install)
                 {
                     UpdateReminder.RecordDismissal(_settings.Current, offer.Version);
@@ -870,7 +870,8 @@ public sealed class ApplicationHost : IDisposable
                 var open = Ask(
                     $"OverInk {offer.Version} is available. You're running {AppVersion.Current}.\n\nThis copy wasn't installed with OverInk Setup, so it can't update itself.",
                     "Open releases",
-                    "Not now");
+                    "Not now",
+                    offer.Notes);
                 if (open)
                 {
                     UpdateService.OpenReleasesPage();
@@ -951,9 +952,9 @@ public sealed class ApplicationHost : IDisposable
         });
     }
 
-    private bool Ask(string message, string confirm, string? cancel)
+    private bool Ask(string message, string confirm, string? cancel, string? notes = null)
     {
-        var dialog = new UpdatePromptWindow(message, confirm, cancel)
+        var dialog = new UpdatePromptWindow(message, confirm, cancel, notes)
         {
             Owner = _overlay,
             WindowStartupLocation = WindowStartupLocation.CenterScreen

@@ -356,6 +356,7 @@
     <RectangleGeometry x:Key="IconRectangle" Rect="3,3,18,18" RadiusX="2" RadiusY="2" />
     <EllipseGeometry x:Key="IconEllipse" Center="12,12" RadiusX="10" RadiusY="10" />
     <StreamGeometry x:Key="IconEraser">M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21 M5.082 11.09l8.828 8.828</StreamGeometry>
+    <StreamGeometry x:Key="IconSelect">M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z</StreamGeometry>
     <StreamGeometry x:Key="IconUndo">M9 14L4 9l5-5 M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11</StreamGeometry>
     <StreamGeometry x:Key="IconRedo">M15 14l5-5-5-5 M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13</StreamGeometry>
     <StreamGeometry x:Key="IconTrash">M10 11v6 M14 11v6 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M3 6h18 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2</StreamGeometry>
@@ -742,6 +743,9 @@
     </Style>
 
     <!-- ===== Context menus (keyed: applied explicitly where used) ===== -->
+    <StreamGeometry x:Key="IconSearch">M21 21l-4.34-4.34 M19 11a8 8 0 1 1-16 0a8 8 0 1 1 16 0</StreamGeometry>
+    <StreamGeometry x:Key="IconArrowLeft">M12 19l-7-7 7-7 M19 12H5</StreamGeometry>
+    <StreamGeometry x:Key="IconLayoutGrid">M3 3h7v7H3z M14 3h7v7h-7z M14 14h7v7h-7z M3 14h7v7H3z</StreamGeometry>
     <StreamGeometry x:Key="IconPencil">M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z M15 5l4 4</StreamGeometry>
     <StreamGeometry x:Key="IconImage">M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z M9 8.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0z M21 15l-3.09-3.09a2 2 0 0 0-2.82 0L6 21</StreamGeometry>
 

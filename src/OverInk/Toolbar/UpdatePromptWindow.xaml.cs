@@ -5,10 +5,16 @@ namespace OverInk.Toolbar;
 
 public partial class UpdatePromptWindow : Window
 {
-    public UpdatePromptWindow(string message, string confirmText, string? cancelText)
+    public UpdatePromptWindow(string message, string confirmText, string? cancelText, string? notes = null)
     {
         InitializeComponent();
         MessageText.Text = message;
+        if (!string.IsNullOrWhiteSpace(notes))
+        {
+            NotesText.Text = notes;
+            NotesPanel.Visibility = Visibility.Visible;
+        }
+
         ConfirmButton.Content = confirmText;
         if (string.IsNullOrEmpty(cancelText))
         {

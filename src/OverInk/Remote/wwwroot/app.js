@@ -38,6 +38,9 @@ const statusIconEl = document.getElementById('statusIcon');
 const logEl = document.getElementById('log');
 const toolBtn = document.getElementById('toolBtn');
 const eraserBtn = document.getElementById('eraserBtn');
+const selectBtn = document.getElementById('selectBtn');
+const selBar = document.getElementById('selBar');
+const selDeleteBtn = document.getElementById('selDeleteBtn');
 const rulerBtn = document.getElementById('rulerBtn');
 const toolPopover = document.getElementById('toolPopover');
 const toolOptionsEl = document.getElementById('toolOptions');
@@ -158,7 +161,8 @@ function loadPen() {
 
 function savePen() {
   try {
-    localStorage.setItem(PEN_KEY, JSON.stringify({ tool, color, size }));
+    // Select only exists while a capture is open; remember the drawing tool instead so a reload never starts in it.
+    localStorage.setItem(PEN_KEY, JSON.stringify({ tool: tool === 'Select' ? lastDrawTool : tool, color, size }));
   } catch { /* private mode / full: just not remembered */ }
 }
 
@@ -243,6 +247,13 @@ let contentRect = { x: 0, y: 0, w: 1, h: 1 };
 let batchPoints = [];
 let batchScheduled = false;
 let shapeDrag = null;
+/**
+ * Select tool state (capture editor only). `ids` are vectorInk keys. `drag` is the gesture in progress:
+ * { kind: 'move' | 'marquee', ... }. While strokes are being moved, `hidden` keeps them off the cached committed
+ * layer so only their translated copies are drawn each frame. `edit` is a pending color/width change whose undo
+ * snapshot is pushed once the adjustment settles.
+ */
+const sel = { ids: new Set(), drag: null, hidden: null, edit: null };
 let pingTimer;
 
 const colors = [
@@ -503,8 +514,7 @@ function handleJson(msg) {
         localStorage.setItem('overink.deviceKey', msg.deviceKey);
       }
       libToken = msg.libToken || '';
-      hudEl.dataset.lib = libToken ? '1' : '0';
-      if (msg.state) applyState(msg.state);
+      hudEl.dataset.lib = libToken ? '1' : '0';      if (msg.state) applyState(msg.state);
       setStatus(`Connected · ${Math.round(liveScreenW)}×${Math.round(liveScreenH)}`, 'ok');
       try {
         inputEl.focus({ preventScroll: true });
@@ -724,6 +734,7 @@ function updateContentRect() {
 }
 
 function clearVectorInkLayers() {
+  selDiscard();
   vectorInk.clear();
   localShapes.clear();
   peerShapes.clear();
@@ -1079,7 +1090,9 @@ function redrawInk() {
   if (!docMode) drawStrokeMap(lctx, vectorInk);
   drawStrokeMap(lctx, activeLocal);
   if (shapeDrag) drawShape(lctx, { ...shapeDrag, tool, color, size });
+  drawSelectionOverlay(lctx);
   drawEraserCursor(lctx);
+  updateSelBar();
 }
 
 /** Paints the screen (or capture) image, plus the capture's veil, onto the already-cleared frame canvas. */
@@ -1137,7 +1150,9 @@ function redraw() {
   redrawRuler();
   drawStrokeMap(lctx, activeLocal);
   if (shapeDrag) drawShape(lctx, { ...shapeDrag, tool, color, size });
+  drawSelectionOverlay(lctx);
   drawEraserCursor(lctx);
+  updateSelBar();
 }
 
 /*
@@ -1161,7 +1176,7 @@ function paintCommittedLayer() {
   const dpr = devicePixelRatio || 1;
   pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   pctx.clearRect(0, 0, innerWidth, innerHeight);
-  drawStrokeMap(pctx, vectorInk);
+  drawStrokeMap(pctx, vectorInk, sel.hidden);
   committedLayer.key = committedInkKey();
   committedLayer.version = vectorInk.version;
 }
@@ -1182,9 +1197,13 @@ function appendCommittedStroke(id, versionBefore) {
   drawStroke(pctx, stroke);
   committedLayer.version = vectorInk.version;
 }
-function drawStrokeMap(ctx, map) {
-  for (const stroke of map.values()) {
-    drawStroke(ctx, stroke);
+function drawStrokeMap(ctx, map, skip = null) {
+  if (!skip) {
+    for (const stroke of map.values()) drawStroke(ctx, stroke);
+    return;
+  }
+  for (const [id, stroke] of map) {
+    if (!skip.has(id)) drawStroke(ctx, stroke);
   }
 }
 
@@ -1465,7 +1484,8 @@ function eraseLocalAt(ax, ay, bx, by, whole) {
           const piece = [];
           for (const idx of run) piece.push(pts[idx * 3], pts[idx * 3 + 1], pts[idx * 3 + 2]);
           vectorInk.set('tmp:' + (++localPieceSeq), {
-            color: st.color, size: st.size, pts: piece, presmoothed: true, tmpOf: root, usePressure: st.usePressure
+            color: st.color, size: st.size, pts: piece, presmoothed: true, tmpOf: root, usePressure: st.usePressure,
+            group: st.group
           });
         }
       }
@@ -1653,6 +1673,11 @@ function beginDrawAtClient(clientX, clientY, p, source) {
   const id = newStrokeId();
   rulerLockSide = 0;
 
+  if (tool === 'Select' && docMode) {
+    selBegin(clientX, clientY);
+    return;
+  }
+
   if (tool === 'Eraser') {
     drawPointerErasing = true;
     const now = Date.now();
@@ -1690,6 +1715,10 @@ function beginDrawAtClient(clientX, clientY, p, source) {
 }
 
 function continueDrawAtClient(clientX, clientY, p) {
+  if (sel.drag) {
+    selMove(clientX, clientY);
+    return;
+  }
   if (shapeDrag) {
     const [nx, ny] = normFromClient(clientX, clientY);
     shapeDrag.x2 = nx;
@@ -1747,6 +1776,10 @@ function eraseSegment(gesture, ax, ay, bx, by) {
 
 function endDraw() {
   rulerLockSide = 0;
+  if (sel.drag) {
+    selEnd();
+    return;
+  }
   if (eraserCursor) {
     eraserCursor = null;
     redrawInk();
@@ -1858,7 +1891,7 @@ function finishStaleStroke(reason) {
 
 function pointerMove(e) {
   if (drawPointerId === null || e.pointerId !== drawPointerId) return;
-  if (!frameCanvas._activeStrokeId && !shapeDrag && !drawPointerErasing) return;
+  if (!frameCanvas._activeStrokeId && !shapeDrag && !drawPointerErasing && !sel.drag) return;
   e.preventDefault();
   continueDraw(e);
 }
@@ -1874,7 +1907,7 @@ function pointerUp(e) {
 
 function onPointerRawUpdate(e) {
   if (drawPointerId !== e.pointerId) return;
-  if (!frameCanvas._activeStrokeId && !shapeDrag && !drawPointerErasing) return;
+  if (!frameCanvas._activeStrokeId && !shapeDrag && !drawPointerErasing && !sel.drag) return;
   e.preventDefault();
   continueDraw(e);
 }
@@ -2210,6 +2243,8 @@ function isLightColor(hex) {
 }
 
 function selectTool(name) {
+  if (name === 'Select' && !docMode) return;
+  if (name !== 'Select') selFlushAndClear();
   tool = name;
   savePen();
   updateUi();
@@ -2282,7 +2317,7 @@ function clearRemovable() {
 
 function selectColor(hex) {
   clearRemovable();
-  color = normalizeColorHex(hex);
+  setColorValue(normalizeColorHex(hex));
   savePen();
   updateUi();
   closePopover();
@@ -2396,7 +2431,7 @@ function pickFromEvent(e) {
 /** Apply the wheel's color live: update the UI now, tell the PC at most every 60ms (and once more when the drag ends). */
 function applyPicked() {
   clearRemovable();
-  color = hsvToHex(pickHue, pickSat, pickVal);
+  setColorValue(hsvToHex(pickHue, pickSat, pickVal));
   drawWheel();
   updateUi();
   if (colorSendTimer) return;
@@ -2436,7 +2471,7 @@ function showColorCustom(show) {
   colorSwatchView.classList.toggle('panel-hidden', show);
   colorCustomView.classList.toggle('panel-hidden', !show);
   if (show) {
-    [pickHue, pickSat, pickVal] = hexToHsv(normalizeColorHex(color));
+    [pickHue, pickSat, pickVal] = hexToHsv(normalizeColorHex(shownColor()));
     drawWheel();
     updateUi();
   }
@@ -2467,7 +2502,7 @@ function initCustomColorUi() {
   });
 
   saveColorBtn.addEventListener('click', () => {
-    const current = normalizeColorHex(color);
+    const current = normalizeColorHex(shownColor());
     if (swatchButtons.has(current)) return;
     // The PC owns the list; the new swatch arrives with its next state broadcast.
     send({ t: 'saveColor', color: current });
@@ -2588,7 +2623,7 @@ function buildDock() {
   }
   // First tap selects the drawing tool (back from the eraser); tapping it again opens the list.
   toolBtn.onclick = () => {
-    if (tool === 'Eraser') {
+    if (tool === 'Eraser' || tool === 'Select') {
       closePopover();
       selectTool(lastDrawTool);
     } else {
@@ -2597,6 +2632,10 @@ function buildDock() {
   };
   eraserBtn.innerHTML = icon('eraser', 22);
   eraserBtn.onclick = () => { closePopover(); selectTool('Eraser'); };
+  selectBtn.innerHTML = icon('select', 22);
+  selectBtn.onclick = () => { closePopover(); selectTool('Select'); };
+  selDeleteBtn.innerHTML = icon('clear', 22);
+  selDeleteBtn.onclick = selDelete;
   rulerBtn.innerHTML = icon('ruler', 22);
   rulerBtn.onclick = () => { closePopover(); setRulerOn(!ruler.on); };
 
@@ -2656,7 +2695,7 @@ function buildDock() {
   sizeSlider.addEventListener('pointerup', endSizeDrag);
   sizeSlider.addEventListener('pointercancel', endSizeDrag);
   sizeSlider.addEventListener('input', () => {
-    size = Number(sizeSlider.value);
+    setSizeValue(Number(sizeSlider.value));
     updateUi();
     sendSizeThrottled();
   });
@@ -2682,12 +2721,14 @@ function updateUi() {
     toolBtn.innerHTML = icon(shown.icon, 22);
     toolBtn.title = `${shown.label} (tap again for more tools)`;
   }
-  toolBtn.classList.toggle('active', tool !== 'Eraser');
+  toolBtn.classList.toggle('active', tool !== 'Eraser' && tool !== 'Select');
+  selectBtn.classList.toggle('active', tool === 'Select');
+  selectBtn.setAttribute('aria-pressed', tool === 'Select' ? 'true' : 'false');
   eraserBtn.classList.toggle('active', tool === 'Eraser');
   eraserBtn.setAttribute('aria-pressed', tool === 'Eraser' ? 'true' : 'false');
   rulerBtn.classList.toggle('lit', ruler.on);
   rulerBtn.setAttribute('aria-pressed', ruler.on ? 'true' : 'false');
-  const current = normalizeColorHex(color);
+  const current = normalizeColorHex(shownColor());
   colorDot.style.background = current;
   for (const [c, s] of swatchButtons) {
     const selected = normalizeColorHex(c) === current;
@@ -2695,7 +2736,7 @@ function updateUi() {
     s.firstElementChild.style.opacity = selected ? '1' : '0';
   }
   refreshCustomPicker(current);
-  const clamped = Math.max(1, Math.min(20, Number(size) || 4));
+  const clamped = Math.max(1, Math.min(20, Number(shownSize()) || 4));
   if (Number(sizeSlider.value) !== clamped) sizeSlider.value = String(clamped);
   sizeValue.textContent = String(Math.round(clamped));
   if (pressureToggle.checked !== pressureSensitive) pressureToggle.checked = pressureSensitive;
@@ -2926,7 +2967,7 @@ function onCaptureFailed(message) {
 /* ---------- Notifications from the PC ---------- */
 
 function isDrawingNow() {
-  return drawPointerId !== null || stylusDrawTouchId !== null || Boolean(frameCanvas._activeStrokeId) || Boolean(shapeDrag) || Boolean(eraseGesture);
+  return drawPointerId !== null || stylusDrawTouchId !== null || Boolean(frameCanvas._activeStrokeId) || Boolean(shapeDrag) || Boolean(eraseGesture) || Boolean(sel.drag);
 }
 
 async function onLibraryChanged() {
@@ -3052,7 +3093,9 @@ async function openDocument(id, name, { discard = false, keepView = false, silen
       size: s.size / doc.scale,
       pts,
       presmoothed: true,
-      usePressure: !s.ignorePressure
+      usePressure: !s.ignorePressure,
+      // Strokes drawn as one entity (an arrow's shaft and head) share a group; the Select tool moves them together.
+      group: typeof s.group === 'string' && s.group ? s.group : undefined
     });
   }
 
@@ -3081,6 +3124,8 @@ async function closeDocument(toLibrary) {
   clearTimeout(doc.saveTimer);
   doc.saveTimer = null;
   docMode = false;
+  selDiscard();
+  if (tool === 'Select') tool = lastDrawTool;
   hudEl.dataset.mode = 'live';
   const saved = liveSaved;
   liveSaved = null;
@@ -3139,7 +3184,7 @@ function docSerialize() {
     const pts = getSmoothedPts(st);
     if (!pts || pts.length < 3) continue;
     const usePressure = st.usePressure ?? pressureSensitive;
-    const key = `${pts.length}|${doc.w}|${doc.h}|${doc.scale}|${st.color}|${st.size}|${usePressure}`;
+    const key = `${pts.length}|${doc.w}|${doc.h}|${doc.scale}|${st.color}|${st.size}|${usePressure}|${st.group || ''}`;
     if (st._serKey !== key) {
       const flat = new Array(pts.length);
       for (let i = 0; i + 2 < pts.length; i += 3) {
@@ -3151,7 +3196,8 @@ function docSerialize() {
         color: normalizeColorHex(st.color),
         size: Math.max(0.5, round2(st.size * doc.scale)),
         pts: flat,
-        ignorePressure: !usePressure
+        ignorePressure: !usePressure,
+        ...(st.group ? { group: st.group } : {})
       });
       st._serKey = key;
     }
@@ -3245,6 +3291,7 @@ function docPushUndo(snapshot) {
 }
 
 function docRestore(map) {
+  selDiscard();
   vectorInk.clear();
   for (const [k, v] of map) vectorInk.set(k, v);
   docMarkDirty();
@@ -3252,6 +3299,7 @@ function docRestore(map) {
 }
 
 function docUndo() {
+  selEditFlush();
   const previous = doc.undo.pop();
   if (!previous) return;
   doc.redo.push(new Map(vectorInk));
@@ -3259,6 +3307,7 @@ function docUndo() {
 }
 
 function docRedo() {
+  selEditFlush();
   const next = doc.redo.pop();
   if (!next) return;
   doc.undo.push(new Map(vectorInk));
@@ -3266,8 +3315,10 @@ function docRedo() {
 }
 
 function docClear() {
+  selEditFlush();
   if (!vectorInk.size) return;
   const snapshot = new Map(vectorInk);
+  selDiscard();
   vectorInk.clear();
   docPushUndo(snapshot);
   docMarkDirty();
@@ -3352,6 +3403,472 @@ function docFinishErase() {
   docPushUndo(doc.eraseSnap);
   doc.eraseSnap = null;
 }
+
+/* ---------- Select tool (capture editor only) ---------- */
+/*
+ * Tap a stroke or shape to select it (with everything it was drawn together with), drag to move it, drag on empty
+ * space to box-select. While something is selected the color and width controls change it instead of the pen, and a
+ * floating button deletes it. Strokes are never edited in place: every change swaps in a new stroke object, so the
+ * Map snapshots that undo is built on stay valid.
+ */
+
+const SEL_HIT_PX = 14;
+const SEL_DRAG_SLOP_PX = 5;
+const SEL_EDIT_SETTLE_MS = 600;
+
+function selActive() {
+  return docMode && tool === 'Select' && sel.ids.size > 0;
+}
+
+function selFirst() {
+  for (const id of sel.ids) {
+    const st = vectorInk.get(id);
+    if (st) return st;
+  }
+  return null;
+}
+
+/** The color the swatches and wheel show: the selection's while something is selected, else the pen's. */
+function shownColor() {
+  return (selActive() && selFirst()?.color) || color;
+}
+
+function shownSize() {
+  return (selActive() && selFirst()?.size) || size;
+}
+
+function setColorValue(hex) {
+  if (selActive()) selApplyStyle({ color: hex });
+  else color = hex;
+}
+
+function setSizeValue(value) {
+  if (selActive()) selApplyStyle({ size: value });
+  else size = value;
+}
+
+/** A copy of a stroke with its smoothing baked in (what gets saved anyway), so edits never touch the original. */
+function selClone(st, patch = {}) {
+  return {
+    color: st.color,
+    size: st.size,
+    pts: getSmoothedPts(st),
+    presmoothed: true,
+    usePressure: st.usePressure ?? pressureSensitive,
+    group: st.group,
+    ...patch
+  };
+}
+
+function selShift(st, dnx, dny) {
+  const src = getSmoothedPts(st);
+  const pts = new Array(src.length);
+  for (let i = 0; i + 2 < src.length; i += 3) {
+    pts[i] = src[i] + dnx;
+    pts[i + 1] = src[i + 1] + dny;
+    pts[i + 2] = src[i + 2];
+  }
+  return selClone(st, { pts });
+}
+
+/** Screen DIPs covered by one client pixel at the current zoom. */
+function selDipsPerPx() {
+  updateContentRect();
+  return (screenW || 1920) / (contentRect.w * view.scale);
+}
+
+/** The topmost stroke within reach of a point (normalized), or null. */
+function selHitAt(nx, ny) {
+  const sx = screenW || 1920;
+  const sy = screenH || 1080;
+  const px = nx * sx;
+  const py = ny * sy;
+  const tol = SEL_HIT_PX * selDipsPerPx();
+  let hit = null;
+  for (const [id, st] of vectorInk) {
+    const pts = getSmoothedPts(st);
+    const reach = tol + (st.size || 4) / 2;
+    const n = Math.floor(pts.length / 3);
+    let best = Infinity;
+    if (n === 1) best = Math.hypot(pts[0] * sx - px, pts[1] * sy - py);
+    for (let i = 1; i < n && best > reach; i++) {
+      best = Math.min(best, distToSegment(
+        px, py, pts[(i - 1) * 3] * sx, pts[(i - 1) * 3 + 1] * sy, pts[i * 3] * sx, pts[i * 3 + 1] * sy));
+    }
+    if (best <= reach) hit = id; // later strokes are drawn on top, so the last hit wins
+  }
+  return hit;
+}
+
+/** The ids plus every stroke that shares a group with one of them (an arrow is a shaft and a head). */
+function selExpand(ids) {
+  const out = new Set(ids);
+  const groups = new Set();
+  for (const id of out) {
+    const g = vectorInk.get(id)?.group;
+    if (g) groups.add(g);
+  }
+  if (groups.size) {
+    for (const [id, st] of vectorInk) {
+      if (st.group && groups.has(st.group)) out.add(id);
+    }
+  }
+  return out;
+}
+
+function segIntersectsRect(ax, ay, bx, by, l, t, r, b) {
+  const inside = (x, y) => x >= l && x <= r && y >= t && y <= b;
+  if (inside(ax, ay) || inside(bx, by)) return true;
+  if (Math.max(ax, bx) < l || Math.min(ax, bx) > r || Math.max(ay, by) < t || Math.min(ay, by) > b) return false;
+  // Liang–Barsky clip of the segment against the rectangle.
+  let t0 = 0;
+  let t1 = 1;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const clip = (p, q) => {
+    if (p === 0) return q >= 0;
+    const u = q / p;
+    if (p < 0) {
+      if (u > t1) return false;
+      if (u > t0) t0 = u;
+    } else {
+      if (u < t0) return false;
+      if (u < t1) t1 = u;
+    }
+    return true;
+  };
+  return clip(-dx, ax - l) && clip(dx, r - ax) && clip(-dy, ay - t) && clip(dy, b - ay) && t0 <= t1;
+}
+
+/** Every stroke touching a rectangle (normalized corners). */
+function selIdsInRect(nx1, ny1, nx2, ny2) {
+  const sx = screenW || 1920;
+  const sy = screenH || 1080;
+  const l = Math.min(nx1, nx2) * sx;
+  const r = Math.max(nx1, nx2) * sx;
+  const t = Math.min(ny1, ny2) * sy;
+  const b = Math.max(ny1, ny2) * sy;
+  const out = [];
+  for (const [id, st] of vectorInk) {
+    const pts = getSmoothedPts(st);
+    const pad = (st.size || 4) / 2;
+    const n = Math.floor(pts.length / 3);
+    let hit = false;
+    if (n === 1) {
+      const x = pts[0] * sx, y = pts[1] * sy;
+      hit = x >= l - pad && x <= r + pad && y >= t - pad && y <= b + pad;
+    }
+    for (let i = 1; i < n && !hit; i++) {
+      hit = segIntersectsRect(
+        pts[(i - 1) * 3] * sx, pts[(i - 1) * 3 + 1] * sy, pts[i * 3] * sx, pts[i * 3 + 1] * sy,
+        l - pad, t - pad, r + pad, b + pad);
+    }
+    if (hit) out.push(id);
+  }
+  return out;
+}
+
+/** Bounds (normalized) of the selected strokes including their width, or null. */
+function selBoundsNorm() {
+  const sx = screenW || 1920;
+  const sy = screenH || 1080;
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  for (const id of sel.ids) {
+    const st = vectorInk.get(id);
+    if (!st) continue;
+    const pts = getSmoothedPts(st);
+    const padX = (st.size || 4) / 2 / sx;
+    const padY = (st.size || 4) / 2 / sy;
+    for (let i = 0; i + 1 < pts.length; i += 3) {
+      l = Math.min(l, pts[i] - padX);
+      r = Math.max(r, pts[i] + padX);
+      t = Math.min(t, pts[i + 1] - padY);
+      b = Math.max(b, pts[i + 1] + padY);
+    }
+  }
+  return l <= r ? { l, t, r, b } : null;
+}
+
+function selSetIds(ids) {
+  selEditFlush();
+  sel.ids = ids;
+  updateUi();
+  updateSelBar();
+  scheduleInkRedraw();
+}
+
+function selClear() {
+  if (sel.ids.size) selSetIds(new Set());
+}
+
+/** Drops the selection and anything in flight without recording history (the ink it referred to is gone/replaced). */
+function selDiscard() {
+  const had = sel.ids.size > 0;
+  if (sel.edit) clearTimeout(sel.edit.timer);
+  sel.edit = null;
+  sel.ids = new Set();
+  sel.drag = null;
+  sel.hidden = null;
+  if (had) {
+    updateUi();
+    updateSelBar();
+  }
+}
+
+/** Leaving the Select tool: a pending color/width change still becomes its undo step. */
+function selFlushAndClear() {
+  selEditFlush();
+  if (!sel.ids.size && !sel.drag) return;
+  sel.ids = new Set();
+  sel.drag = null;
+  sel.hidden = null;
+  updateSelBar();
+  scheduleInkRedraw();
+}
+
+/** Turns the color/width adjustment in progress into a single undo step. */
+function selEditFlush() {
+  const e = sel.edit;
+  if (!e) return;
+  clearTimeout(e.timer);
+  sel.edit = null;
+  docPushUndo(e.snapshot);
+}
+
+function selApplyStyle(patch) {
+  if (!sel.edit) sel.edit = { snapshot: new Map(vectorInk), timer: 0 };
+  for (const id of sel.ids) {
+    const st = vectorInk.get(id);
+    if (st) vectorInk.set(id, selClone(st, patch)); // set on an existing key keeps its place in the stacking order
+  }
+  clearTimeout(sel.edit.timer);
+  sel.edit.timer = setTimeout(selEditFlush, SEL_EDIT_SETTLE_MS);
+  docMarkDirty();
+  scheduleInkRedraw();
+}
+
+function selDelete() {
+  if (!sel.ids.size) return;
+  selEditFlush();
+  const snapshot = new Map(vectorInk);
+  for (const id of sel.ids) vectorInk.delete(id);
+  docPushUndo(snapshot);
+  docMarkDirty();
+  selDiscard();
+  updateUi();
+  redraw();
+}
+
+function selBegin(clientX, clientY) {
+  selEditFlush();
+  const [nx, ny] = normFromClient(clientX, clientY);
+  const hit = selHitAt(nx, ny);
+  let kind = 'marquee';
+  if (hit) {
+    if (!sel.ids.has(hit)) selSetIds(selExpand([hit]));
+    kind = 'move';
+  } else {
+    // Pressing inside the selection's box (but not on ink) still grabs it.
+    const b = selBoundsNorm();
+    if (b && nx >= b.l && nx <= b.r && ny >= b.t && ny <= b.b) kind = 'move';
+    else selClear();
+  }
+  sel.drag = { kind, cx0: clientX, cy0: clientY, nx0: nx, ny0: ny, nx, ny, active: false, dnx: 0, dny: 0 };
+  updateSelBar();
+  scheduleInkRedraw();
+}
+
+function selMove(clientX, clientY) {
+  const d = sel.drag;
+  if (!d) return;
+  const [nx, ny] = normFromClient(clientX, clientY);
+  d.nx = nx;
+  d.ny = ny;
+  if (!d.active) {
+    if (Math.hypot(clientX - d.cx0, clientY - d.cy0) < SEL_DRAG_SLOP_PX) return;
+    d.active = true;
+    if (d.kind === 'move') {
+      d.snapshot = new Map(vectorInk);
+      d.originals = [...sel.ids].map(id => [id, vectorInk.get(id)]).filter(([, st]) => st);
+      d.bounds = selBoundsNorm();
+      // Draw the moving strokes on the live layer and take them off the cached one, so each frame is cheap.
+      sel.hidden = new Set(d.originals.map(([id]) => id));
+      paintCommittedLayer();
+      updateSelBar();
+    }
+  }
+  if (d.kind === 'move') {
+    const b = d.bounds;
+    if (!b) return;
+    // Keep the selection inside the image.
+    d.dnx = Math.min(Math.max(nx - d.nx0, Math.min(0, -b.l)), Math.max(0, 1 - b.r));
+    d.dny = Math.min(Math.max(ny - d.ny0, Math.min(0, -b.t)), Math.max(0, 1 - b.b));
+    d.preview = d.originals.map(([, st]) => selShift(st, d.dnx, d.dny));
+  }
+  scheduleInkRedraw();
+}
+
+function selEnd() {
+  const d = sel.drag;
+  sel.drag = null;
+  if (!d) return;
+  if (d.kind === 'move') {
+    if (d.active) {
+      if (Math.abs(d.dnx) + Math.abs(d.dny) > 1e-6) {
+        d.originals.forEach(([id, st]) => vectorInk.set(id, selShift(st, d.dnx, d.dny)));
+        docPushUndo(d.snapshot);
+        docMarkDirty();
+      }
+      sel.hidden = null;
+      paintCommittedLayer();
+    }
+  } else if (d.active) {
+    const ids = selIdsInRect(d.nx0, d.ny0, d.nx, d.ny);
+    selSetIds(selExpand(ids));
+  }
+  updateUi();
+  updateSelBar();
+  redrawInk();
+}
+
+function drawNormRect(ctx, b, fill, dashed) {
+  updateContentRect();
+  const cr = contentRect;
+  const k = 1 / view.scale;
+  const x = cr.x + b.l * cr.w - 3 * k;
+  const y = cr.y + b.t * cr.h - 3 * k;
+  const w = (b.r - b.l) * cr.w + 6 * k;
+  const h = (b.b - b.t) * cr.h + 6 * k;
+  ctx.save();
+  applyViewTransform(ctx);
+  ctx.lineWidth = 1.5 * k;
+  ctx.strokeStyle = '#4c8dff';
+  ctx.fillStyle = fill;
+  if (dashed) ctx.setLineDash([6 * k, 4 * k]);
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+  ctx.restore();
+}
+
+/**
+ * Makes the selection unmistakable: a translucent halo along every selected stroke, and a dot where each entity
+ * starts (green) and ends (blue). An entity drawn as several strokes (an arrow) is marked once, on its first stroke.
+ */
+function drawSelectionHighlight(ctx, strokes) {
+  if (!strokes.length) return;
+  updateContentRect();
+  const cr = contentRect;
+  const k = 1 / view.scale;
+  const dipToInner = cr.w / (screenW || 1920);
+  const ends = [];
+  const seenGroups = new Set();
+
+  ctx.save();
+  applyViewTransform(ctx);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(76, 141, 255, 0.4)';
+  for (const st of strokes) {
+    const pts = getSmoothedPts(st);
+    if (pts.length < 3) continue;
+    ctx.lineWidth = Math.max(0.5, (st.size || 4) * dipToInner) + 6 * k;
+    ctx.beginPath();
+    ctx.moveTo(cr.x + pts[0] * cr.w, cr.y + pts[1] * cr.h);
+    for (let i = 3; i + 1 < pts.length; i += 3) ctx.lineTo(cr.x + pts[i] * cr.w, cr.y + pts[i + 1] * cr.h);
+    ctx.stroke();
+    if (st.group) {
+      if (seenGroups.has(st.group)) continue;
+      seenGroups.add(st.group);
+    }
+    const last = pts.length - 3;
+    ends.push([
+      cr.x + pts[0] * cr.w, cr.y + pts[1] * cr.h,
+      cr.x + pts[last] * cr.w, cr.y + pts[last + 1] * cr.h
+    ]);
+  }
+
+  const radius = 5 * k;
+  const dot = (x, y, fill) => {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = 1.5 * k;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+  };
+  for (const [x1, y1, x2, y2] of ends) {
+    // A closed shape ends where it began; one marker is enough.
+    if (Math.hypot(x2 - x1, y2 - y1) > radius * 2.5) dot(x2, y2, '#4c8dff');
+    dot(x1, y1, '#34d399');
+  }
+  ctx.restore();
+}
+
+/** The strokes being dragged, the selection box and the marquee, drawn on the live ink layer. */
+function drawSelectionOverlay(ctx) {
+  if (!docMode || tool !== 'Select') return;
+  const d = sel.drag;
+  const moving = d && d.kind === 'move' && d.active && d.preview;
+  if (moving) for (const st of d.preview) drawStroke(ctx, st);
+  if (sel.ids.size) {
+    drawSelectionHighlight(ctx, moving ? d.preview : [...sel.ids].map(id => vectorInk.get(id)).filter(Boolean));
+  }
+  if (d && d.kind === 'marquee' && d.active) {
+    drawNormRect(ctx, {
+      l: Math.min(d.nx0, d.nx), t: Math.min(d.ny0, d.ny), r: Math.max(d.nx0, d.nx), b: Math.max(d.ny0, d.ny)
+    }, 'rgba(76, 141, 255, 0.14)', false);
+  }
+  if (sel.ids.size) {
+    const b = moving
+      ? { l: d.bounds.l + d.dnx, t: d.bounds.t + d.dny, r: d.bounds.r + d.dnx, b: d.bounds.b + d.dny }
+      : selBoundsNorm();
+    if (b) drawNormRect(ctx, b, 'rgba(76, 141, 255, 0.08)', true);
+  }
+}
+
+/** Keeps the floating delete button beside the selection (it is DOM, so it follows the view by hand). */
+function updateSelBar() {
+  const b = selActive() && !(sel.drag && sel.drag.active) && !viewPreviewActive ? selBoundsNorm() : null;
+  if (!b) {
+    selBar.classList.add('panel-hidden');
+    return;
+  }
+  updateContentRect();
+  const cr = contentRect;
+  const c = Math.cos(view.rotation);
+  const s = Math.sin(view.rotation);
+  const { left, top } = canvasClientOffset();
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [nx, ny] of [[b.l, b.t], [b.r, b.t], [b.r, b.b], [b.l, b.b]]) {
+    const ix = cr.x + nx * cr.w;
+    const iy = cr.y + ny * cr.h;
+    const x = left + view.tx + view.scale * (c * ix - s * iy);
+    const y = top + view.ty + view.scale * (s * ix + c * iy);
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  const barHeight = 58;
+  let y = minY - barHeight - 8;
+  if (y < 8) y = maxY + 12;
+  y = Math.min(Math.max(8, y), innerHeight - 140);
+  const x = Math.min(Math.max(40, (minX + maxX) / 2), innerWidth - 40);
+  selBar.style.left = `${x}px`;
+  selBar.style.top = `${y}px`;
+  selBar.classList.remove('panel-hidden');
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!selActive() || e.target instanceof HTMLInputElement) return;
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
+    selDelete();
+  } else if (e.key === 'Escape') {
+    selClear();
+  }
+});
 
 /** All drawing messages for the current capture land here instead of the socket. */
 function docHandle(msg) {

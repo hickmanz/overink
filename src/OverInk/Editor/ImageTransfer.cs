@@ -18,6 +18,29 @@ public static class ImageTransfer
         return obj;
     }
 
+    /// <summary>
+    /// Like <see cref="BuildDataObject"/>, for an image that was just saved to <paramref name="filePath"/>: the
+    /// PNG flavor reuses the file's bytes instead of encoding the same pixels again.
+    /// </summary>
+    public static DataObject BuildDataObjectFromSavedFile(BitmapSource flattened, string filePath)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(filePath);
+        }
+        catch (IOException)
+        {
+            return BuildDataObject(flattened, filePath);
+        }
+
+        var obj = new DataObject();
+        obj.SetData("PNG", new MemoryStream(bytes), autoConvert: false);
+        obj.SetImage(flattened);
+        obj.SetFileDropList(new StringCollection { filePath });
+        return obj;
+    }
+
     public static void SetClipboardWithRetry(DataObject data, int attempts = 8)
     {
         for (var i = 0; i < attempts; i++)

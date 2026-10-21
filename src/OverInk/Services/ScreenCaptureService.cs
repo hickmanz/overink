@@ -39,11 +39,14 @@ public static class ScreenCaptureService
             var hBitmap = bitmap.GetHbitmap();
             try
             {
-                return Imaging.CreateBitmapSourceFromHBitmap(
+                var source = Imaging.CreateBitmapSourceFromHBitmap(
                     hBitmap,
                     IntPtr.Zero,
                     Int32Rect.Empty,
                     BitmapSizeOptions.FromEmptyOptions());
+                // Frozen so it can be encoded on a worker thread while the UI keeps going.
+                source.Freeze();
+                return source;
             }
             finally
             {

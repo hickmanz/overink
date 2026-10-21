@@ -123,13 +123,22 @@ public sealed class UpdateService : IDisposable
     }
 
     public Task<UpdateCheckResult> CheckAsync(CancellationToken cancellationToken = default) =>
-        CheckAsync(AppVersion.Current, cancellationToken);
+        CheckAsync(AppVersion.Current, includePrereleases: false, cancellationToken);
 
-    public async Task<UpdateCheckResult> CheckAsync(string currentVersion, CancellationToken cancellationToken = default)
+    /// <param name="includePrereleases">When true, GitHub pre-releases (beta tags) are offered too.</param>
+    public Task<UpdateCheckResult> CheckAsync(bool includePrereleases, CancellationToken cancellationToken = default) =>
+        CheckAsync(AppVersion.Current, includePrereleases, cancellationToken);
+
+    public async Task<UpdateCheckResult> CheckAsync(
+        string currentVersion,
+        bool includePrereleases = false,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, GitHubReleaseParser.LatestApiUrl);
+            // releases/latest never returns pre-releases, so the beta channel reads the recent-releases list.
+            var url = includePrereleases ? GitHubReleaseParser.ReleasesListApiUrl : GitHubReleaseParser.LatestApiUrl;
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
             using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.NotFound)
@@ -143,7 +152,7 @@ public sealed class UpdateService : IDisposable
             }
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var offer = GitHubReleaseParser.Parse(json);
+            var offer = includePrereleases ? PickNewest(GitHubReleaseParser.ParseMany(json)) : GitHubReleaseParser.Parse(json);
             if (offer == null)
             {
                 return UpdateCheckResult.Fail("The latest release doesn't include an installer.", reachedServer: true);
@@ -155,9 +164,10 @@ public sealed class UpdateService : IDisposable
             }
 
             var canInstall = _isInstalledCopy();
+            var label = offer.IsPrerelease ? $"Version {offer.Version} (beta)" : $"Version {offer.Version}";
             var message = canInstall
-                ? $"Version {offer.Version} is available."
-                : $"Version {offer.Version} is available. This copy wasn't installed with OverInk Setup, so it can't update itself.";
+                ? $"{label} is available."
+                : $"{label} is available. This copy wasn't installed with OverInk Setup, so it can't update itself.";
             return UpdateCheckResult.Available(message, offer, canInstall);
         }
         catch (OperationCanceledException)
@@ -172,6 +182,20 @@ public sealed class UpdateService : IDisposable
         {
             return UpdateCheckResult.Fail("GitHub returned an unexpected response.");
         }
+    }
+
+    private static UpdateOffer? PickNewest(IReadOnlyList<UpdateOffer> offers)
+    {
+        UpdateOffer? best = null;
+        foreach (var offer in offers)
+        {
+            if (best == null || AppVersion.IsNewer(best.Version, offer.Version))
+            {
+                best = offer;
+            }
+        }
+
+        return best;
     }
 
     public async Task<string> DownloadVerifiedInstallerAsync(UpdateOffer offer, CancellationToken cancellationToken = default)

@@ -616,6 +616,20 @@
                                 <TextBlock x:Name="CurrentVersionText" Text="—" Style="{StaticResource RowDesc}" />
                                 <TextBlock Text="Last checked" Style="{StaticResource RowTitle}" Margin="0,10,0,0" />
                                 <TextBlock x:Name="LastCheckedText" Text="Never" Style="{StaticResource RowDesc}" />
+                                <Grid Margin="0,12,0,0" ToolTip="Offers GitHub pre-releases (beta tags) as updates. They can be less stable.">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Beta updates" Style="{StaticResource RowTitle}" />
+                                        <TextBlock Text="Include pre-release builds" Style="{StaticResource RowDesc}" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="BetaUpdatesCheck" Grid.Column="1" Margin="12,0,0,0"
+                                              Style="{StaticResource SwitchCheckBox}"
+                                              AutomationProperties.Name="Include beta updates"
+                                              Checked="BetaUpdates_Changed" Unchecked="BetaUpdates_Changed" />
+                                </Grid>
                                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                     <Button x:Name="CheckForUpdatesButton" Content="Check now" MinWidth="96"
                                             Style="{StaticResource SettingsAction}" Click="CheckForUpdatesButton_Click"

@@ -75,7 +75,42 @@ public static class AppVersion
             return true;
         }
 
-        return string.CompareOrdinal(candidateParts.Value.Pre, currentParts.Value.Pre) > 0;
+        return ComparePrerelease(candidateParts.Value.Pre, currentParts.Value.Pre) > 0;
+    }
+
+    /// <summary>
+    /// Semver-style prerelease ordering: dot-separated parts compare left to right, numeric parts as numbers
+    /// (so <c>beta.10</c> is newer than <c>beta.2</c>), and a numeric part sorts below a text part.
+    /// </summary>
+    private static int ComparePrerelease(string left, string right)
+    {
+        var leftParts = left.Split('.');
+        var rightParts = right.Split('.');
+        for (var i = 0; i < Math.Min(leftParts.Length, rightParts.Length); i++)
+        {
+            var leftNumeric = long.TryParse(leftParts[i], out var leftNumber);
+            var rightNumeric = long.TryParse(rightParts[i], out var rightNumber);
+            int compared;
+            if (leftNumeric && rightNumeric)
+            {
+                compared = leftNumber.CompareTo(rightNumber);
+            }
+            else if (leftNumeric != rightNumeric)
+            {
+                compared = leftNumeric ? -1 : 1;
+            }
+            else
+            {
+                compared = string.CompareOrdinal(leftParts[i], rightParts[i]);
+            }
+
+            if (compared != 0)
+            {
+                return compared;
+            }
+        }
+
+        return leftParts.Length.CompareTo(rightParts.Length);
     }
 
     public static string FormatLastChecked(DateTime? value)

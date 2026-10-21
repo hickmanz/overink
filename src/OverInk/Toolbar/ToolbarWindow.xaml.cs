@@ -132,6 +132,7 @@ public partial class ToolbarWindow : Window
         ToolbarInGrabsCheck.IsChecked = _session.Settings.Current.CaptureToolbarInGrabs;
         RemoteServerCheck.IsChecked = _session.Settings.Current.RemoteEnabled;
         AutoCopyCheck.IsChecked = _session.Settings.Current.AutoCopyCaptures;
+        BetaUpdatesCheck.IsChecked = _session.Settings.Current.IncludeBetaUpdates;
         _syncingSettingsUi = false;
     }
 
@@ -879,6 +880,17 @@ public partial class ToolbarWindow : Window
         }
 
         HideToolbarWhenNotDrawingChanged?.Invoke(this, HideToolbarWhenNotDrawingCheck.IsChecked == true);
+    }
+
+    private void BetaUpdates_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _syncingSettingsUi)
+        {
+            return;
+        }
+
+        _session.Settings.Current.IncludeBetaUpdates = BetaUpdatesCheck.IsChecked == true;
+        _session.PersistSettings();
     }
 
     public void RefreshUpdateDetails()

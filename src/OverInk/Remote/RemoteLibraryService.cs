@@ -17,7 +17,7 @@ namespace OverInk.Remote;
 
 public sealed record RemoteLibraryItemDto(string Id, string Name, long CreatedAt, int W, int H, string Rev, bool Editable);
 
-public sealed record RemoteLibraryStroke(string Color, double Size, float[] Pts, bool IgnorePressure);
+public sealed record RemoteLibraryStroke(string Color, double Size, float[] Pts, bool IgnorePressure, string? Group = null);
 
 /// <summary><c>Veil</c> is the capture's white wash (0–0.9); the original is served clean and the client applies it.</summary>
 public sealed record RemoteLibraryStrokes(string Rev, int W, int H, List<RemoteLibraryStroke> Strokes, double Veil = 0);
@@ -582,7 +582,13 @@ public sealed class RemoteLibraryService : IDisposable
                 FitToCurve = false,
                 IgnorePressure = dto.IgnorePressure
             };
-            strokes.Add(new Stroke(points, attributes));
+            var stroke = new Stroke(points, attributes);
+            if (!string.IsNullOrEmpty(dto.Group) && dto.Group.Length <= 64)
+            {
+                StrokeGroups.Set(stroke, dto.Group);
+            }
+
+            strokes.Add(stroke);
         }
 
         return strokes;
@@ -611,7 +617,8 @@ public sealed class RemoteLibraryService : IDisposable
                 ColorHex.ToRgbHex(stroke.DrawingAttributes.Color),
                 stroke.DrawingAttributes.Width,
                 pts,
-                stroke.DrawingAttributes.IgnorePressure));
+                stroke.DrawingAttributes.IgnorePressure,
+                StrokeGroups.Get(stroke)));
         }
 
         return list;

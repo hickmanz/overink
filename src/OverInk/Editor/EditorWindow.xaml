@@ -123,6 +123,62 @@
             </Setter>
         </Style>
 
+        <!-- The last card of the library bar: same footprint as a capture card, opens the full library -->
+        <Style x:Key="AllCapturesCard" TargetType="Button">
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="VerticalAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <!-- Stretches to the height of the capture cards beside it; the box fills the card -->
+                        <Border x:Name="Card" Background="#FF18181B" BorderBrush="#18FFFFFF" BorderThickness="1.5"
+                                CornerRadius="12" Padding="5">
+                            <Border x:Name="Box" Width="132" MinHeight="76" CornerRadius="8" Background="#FF0C0C0E"
+                                    BorderBrush="#26FFFFFF" BorderThickness="1">
+                                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                                    <ContentControl x:Name="Glyph" Style="{StaticResource LucideIcon}"
+                                                    Tag="{StaticResource IconLayoutGrid}" Width="22" Height="22"
+                                                    HorizontalAlignment="Center"
+                                                    Foreground="{StaticResource MutedTextBrush}" />
+                                    <TextBlock Text="All captures" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextBrush}" TextAlignment="Center"
+                                               Margin="0,6,0,0" />
+                                    <TextBlock Text="{TemplateBinding Content}" FontSize="10" TextAlignment="Center"
+                                               Foreground="{StaticResource MutedTextBrush}" Margin="0,2,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Card" Property="Background" Value="#FF202024" />
+                                <Setter TargetName="Card" Property="BorderBrush" Value="#38FFFFFF" />
+                                <Setter TargetName="Glyph" Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Card" Property="Background" Value="#FF2A2A30" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- The library list, with the All captures card scrolling along after the last capture -->
+        <ControlTemplate x:Key="LibraryBarTemplate" TargetType="ListBox">
+            <ScrollViewer Focusable="False" Padding="{TemplateBinding Padding}"
+                          HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}"
+                          VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
+                          CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}">
+                <StackPanel Orientation="Horizontal">
+                    <ItemsPresenter />
+                    <Button x:Name="AllCapturesButton" Style="{StaticResource AllCapturesCard}"
+                            Click="AllCaptures_Click" ToolTip="Browse every capture" />
+                </StackPanel>
+            </ScrollViewer>
+        </ControlTemplate>
+
         <Style x:Key="CropHandle" TargetType="Border">
             <Setter Property="Width" Value="12" />
             <Setter Property="Height" Value="12" />
@@ -229,7 +285,11 @@
                     <TextBlock Text="TOOLS" Style="{StaticResource SectionLabel}" />
                     <Border Background="#12FFFFFF" CornerRadius="12" Padding="2" HorizontalAlignment="Left" Margin="0,0,0,22">
                         <StackPanel Orientation="Horizontal">
-                            <ToggleButton x:Name="PenToggle" Tag="Pen" Style="{StaticResource DockToolToggle}" IsChecked="True"
+                            <ToggleButton x:Name="SelectToggle" Tag="Select" Style="{StaticResource DockToolToggle}" IsChecked="True"
+                                          Click="Tool_Click" ToolTip="Select (V) — move, recolor, resize or delete strokes and shapes">
+                                <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconSelect}" />
+                            </ToggleButton>
+                            <ToggleButton x:Name="PenToggle" Tag="Pen" Style="{StaticResource DockToolToggle}"
                                           Click="Tool_Click" ToolTip="Pen (P)">
                                 <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconPen}" />
                             </ToggleButton>
@@ -300,6 +360,19 @@
                                     ValueChanged="PenSizeSlider_ValueChanged" />
                         </Grid>
                     </StackPanel>
+
+                    <!-- Select hint (replaces the pen controls until something is selected) -->
+                    <Border x:Name="SelectHint" Visibility="Collapsed" Background="#FF18181B" CornerRadius="12" Padding="14">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconSelect}"
+                                                Width="16" Height="16" Foreground="{StaticResource AccentBrush}" />
+                                <TextBlock Text="Select" Style="{StaticResource RowTitle}" Margin="8,0,0,0" />
+                            </StackPanel>
+                            <TextBlock Text="Click a stroke or shape, or drag a box around several. Drag to move, then change the color or width here. Delete removes the selection; Shift+click adds to it."
+                                       Style="{StaticResource RowDesc}" />
+                        </StackPanel>
+                    </Border>
 
                     <!-- Eraser hint (replaces the pen controls while erasing) -->
                     <Border x:Name="EraserHint" Visibility="Collapsed" Background="#FF18181B" CornerRadius="12" Padding="14">
@@ -396,6 +469,14 @@
                             <TextBlock Text="Hide" FontSize="11.5" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
+                    <Button x:Name="AllCapturesHeaderButton" DockPanel.Dock="Right" Style="{StaticResource EdPill}"
+                            Click="AllCaptures_Click" ToolTip="Browse every capture">
+                        <StackPanel Orientation="Horizontal">
+                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconLayoutGrid}"
+                                            Width="14" Height="14" Margin="0,0,6,0" />
+                            <TextBlock Text="All captures" FontSize="11.5" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     <ContentControl DockPanel.Dock="Left" Style="{StaticResource LucideIcon}"
                                     Tag="{StaticResource IconImages}" Width="15" Height="15"
                                     Foreground="{StaticResource MutedTextBrush}" />
@@ -406,13 +487,18 @@
                 </DockPanel>
 
                 <ListBox x:Name="LibraryList" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                         Template="{StaticResource LibraryBarTemplate}"
                          Margin="10,0,10,8" Padding="0"
                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
                          ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                         ScrollViewer.CanContentScroll="False"
                          ItemContainerStyle="{StaticResource TrayItemStyle}"
                          SelectionChanged="LibraryList_SelectionChanged"
                          PreviewMouseLeftButtonDown="LibraryList_PreviewMouseLeftButtonDown"
-                         PreviewMouseMove="LibraryList_PreviewMouseMove">
+                         PreviewMouseLeftButtonUp="LibraryList_PreviewMouseLeftButtonUp"
+                         LostMouseCapture="LibraryList_LostMouseCapture"
+                         PreviewMouseMove="LibraryList_PreviewMouseMove"
+                         PreviewMouseWheel="LibraryList_PreviewMouseWheel">
                     <ListBox.ItemsPanel>
                         <ItemsPanelTemplate>
                             <StackPanel Orientation="Horizontal" />
@@ -448,6 +534,12 @@
                     </ListBox.ItemTemplate>
                 </ListBox>
 
+                <!-- Insertion marker shown while a card is dragged to a new place in the bar -->
+                <Canvas x:Name="ReorderLayer" Grid.Row="1" IsHitTestVisible="False">
+                    <Border x:Name="ReorderIndicator" Width="3" CornerRadius="1.5" Visibility="Collapsed"
+                            Background="{StaticResource AccentBrush}" />
+                </Canvas>
+
                 <TextBlock x:Name="TrayEmptyLabel" Grid.Row="1" Visibility="Collapsed" HorizontalAlignment="Center"
                            VerticalAlignment="Center" Style="{StaticResource MutedLabel}" FontSize="12"
                            Text="Nothing here yet — screenshots you take with OverInk appear in your library." />
@@ -458,7 +550,8 @@
         <Grid x:Name="CanvasArea" Background="#FF070708">
             <ScrollViewer x:Name="CanvasScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                           PreviewMouseWheel="CanvasScroll_PreviewMouseWheel">
-                <Grid x:Name="CanvasHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <!-- The margin is outside the zoom transform: a constant gutter so the crop handles on the edges stay reachable -->
+                <Grid x:Name="CanvasHost" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24">
                     <Grid.LayoutTransform>
                         <ScaleTransform x:Name="CanvasScale" ScaleX="1" ScaleY="1" />
                     </Grid.LayoutTransform>
@@ -472,6 +565,27 @@
                     <Canvas x:Name="ShapeCanvas" Background="Transparent" IsHitTestVisible="False" Cursor="Cross"
                             MouseLeftButtonDown="ShapeCanvas_MouseDown" MouseMove="ShapeCanvas_MouseMove"
                             MouseLeftButtonUp="ShapeCanvas_MouseUp" LostMouseCapture="ShapeCanvas_LostMouseCapture" />
+
+                    <!-- Select tool: catches the pointer while Select is active and draws the selection chrome -->
+                    <Canvas x:Name="SelectionLayer" Background="Transparent" IsHitTestVisible="False"
+                            MouseLeftButtonDown="SelectionLayer_MouseDown" MouseMove="SelectionLayer_MouseMove"
+                            MouseLeftButtonUp="SelectionLayer_MouseUp" LostMouseCapture="SelectionLayer_LostMouseCapture">
+                        <!-- Halo around each selected stroke plus its start and end points; rebuilt when the selection changes -->
+                        <Canvas x:Name="SelectionMarks" IsHitTestVisible="False" />
+                        <Rectangle x:Name="SelectionBox" Visibility="Collapsed" IsHitTestVisible="False"
+                                   Stroke="#FF4C8DFF" StrokeThickness="1.5" StrokeDashArray="4,3" Fill="#144C8DFF" />
+                        <Rectangle x:Name="MarqueeBox" Visibility="Collapsed" IsHitTestVisible="False"
+                                   Stroke="#FF4C8DFF" StrokeThickness="1" Fill="#224C8DFF" />
+                        <Border x:Name="SelectionBar" Visibility="Collapsed" Background="#F01D1D21" CornerRadius="8"
+                                BorderBrush="#33FFFFFF" BorderThickness="1" Height="32" RenderTransformOrigin="0,0">
+                            <!-- 28 + 1px margins = the bar's 30px inner height (32 minus its 1px border), so the icon sits dead center -->
+                            <Button x:Name="SelectionDeleteButton" Style="{StaticResource EdIconButton}"
+                                    Width="28" Height="28" Margin="1"
+                                    Click="SelectionDelete_Click" ToolTip="Delete selection (Del)">
+                                <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconTrash}" />
+                            </Button>
+                        </Border>
+                    </Canvas>
 
                     <Canvas x:Name="CropVisualLayer" IsHitTestVisible="False">
                         <Rectangle x:Name="CropDimTop" Fill="#99000000" />
@@ -530,6 +644,135 @@
                            Style="{StaticResource RowDesc}" TextAlignment="Center" FontSize="12" />
             </StackPanel>
 
+            <!-- Full library: every capture as a grid; click opens one, Select mode picks several to move to the front -->
+            <Grid x:Name="LibraryGridView" Visibility="Collapsed" Background="#FF070708">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="20,16,20,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Column="0" Style="{StaticResource EdSecondaryButton}" Click="GridBack_Click"
+                            ToolTip="Back to the editor (Esc)">
+                        <StackPanel Orientation="Horizontal">
+                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconArrowLeft}"
+                                            Width="14" Height="14" Margin="0,0,6,0" />
+                            <TextBlock Text="Back" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                        <TextBlock Text="ALL CAPTURES" Style="{StaticResource SectionLabel}" VerticalAlignment="Center" />
+                        <TextBlock x:Name="GridCountLabel" Style="{StaticResource MutedLabel}" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <Border Grid.Column="3" Width="240" Height="32" CornerRadius="9" Background="#FF1C1C20"
+                            BorderBrush="#28FFFFFF" BorderThickness="1" Margin="0,0,10,0">
+                        <Grid>
+                            <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconSearch}"
+                                            Width="14" Height="14" HorizontalAlignment="Left" Margin="10,0,0,0"
+                                            Foreground="{StaticResource MutedTextBrush}" IsHitTestVisible="False" />
+                            <TextBox x:Name="GridSearchBox" Background="Transparent" BorderThickness="0"
+                                     Foreground="{StaticResource TextBrush}" CaretBrush="White" FontSize="12.5"
+                                     VerticalContentAlignment="Center" Margin="32,0,8,0" Padding="0"
+                                     ToolTip="Search captures (Ctrl+F)"
+                                     TextChanged="GridSearchBox_TextChanged" PreviewKeyDown="GridSearchBox_PreviewKeyDown" />
+                        </Grid>
+                    </Border>
+
+                    <ToggleButton Grid.Column="4" x:Name="GridSelectToggle" Style="{StaticResource SegBase}"
+                                  Content="Select" Margin="0,0,10,0" MinWidth="64" Focusable="False"
+                                  ToolTip="Pick several captures to move to the front of the library bar"
+                                  Checked="GridSelectToggle_Changed" Unchecked="GridSelectToggle_Changed" />
+
+                    <Button Grid.Column="5" x:Name="GridMoveButton" Style="{StaticResource PrimaryButton}"
+                            Padding="16,0" Height="32" Visibility="Collapsed" IsEnabled="False"
+                            Click="GridMoveToFront_Click" Focusable="False" Content="Move to front" />
+                </Grid>
+
+                <ScrollViewer Grid.Row="1" x:Name="GridScroll" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled" ScrollChanged="GridScroll_ScrollChanged"
+                              SizeChanged="GridScroll_SizeChanged">
+                    <ItemsControl x:Name="GridItems" Margin="20,4,10,24">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border x:Name="Card" Width="188" Margin="0,0,10,10" Padding="6" CornerRadius="12"
+                                        Background="#FF18181B" BorderBrush="#18FFFFFF" BorderThickness="1.5"
+                                        Cursor="Hand" Tag="{Binding}" ToolTip="{Binding Title}"
+                                        MouseLeftButtonUp="GridCard_MouseLeftButtonUp"
+                                        MouseRightButtonUp="GridCard_MouseRightButtonUp">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Border Background="#FF0C0C0E" CornerRadius="8" Height="112" ClipToBounds="True">
+                                                <Image Source="{Binding Thumbnail}" Stretch="Uniform" />
+                                            </Border>
+                                            <Border x:Name="Tick" Width="22" Height="22" CornerRadius="11"
+                                                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="6"
+                                                    Background="#99000000" BorderBrush="#CCFFFFFF" BorderThickness="1.5"
+                                                    Visibility="Collapsed">
+                                                <ContentControl x:Name="TickIcon" Style="{StaticResource LucideIcon}"
+                                                                Tag="{StaticResource IconCheck}" Width="12" Height="12"
+                                                                Foreground="White" Visibility="Collapsed" />
+                                            </Border>
+                                        </Grid>
+                                        <TextBlock Text="{Binding Title}" FontSize="11.5" FontWeight="Medium"
+                                                   Foreground="{StaticResource TextBrush}" TextTrimming="CharacterEllipsis"
+                                                   Margin="3,7,3,0" />
+                                        <TextBlock Text="{Binding Subtitle}" FontSize="10" TextTrimming="CharacterEllipsis"
+                                                   Foreground="{StaticResource MutedTextBrush}" Margin="3,1,3,0">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Subtitle}" Value="">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Border>
+                                <DataTemplate.Triggers>
+                                    <Trigger SourceName="Card" Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Card" Property="Background" Value="#FF202024" />
+                                        <Setter TargetName="Card" Property="BorderBrush" Value="#38FFFFFF" />
+                                    </Trigger>
+                                    <DataTrigger Binding="{Binding ShowCheck}" Value="True">
+                                        <Setter TargetName="Tick" Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsChecked}" Value="True">
+                                        <Setter TargetName="Card" Property="Background" Value="#FF1B2436" />
+                                        <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                        <Setter TargetName="Tick" Property="Background" Value="{StaticResource AccentBrush}" />
+                                        <Setter TargetName="Tick" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                        <Setter TargetName="TickIcon" Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <TextBlock x:Name="GridEmptyLabel" Grid.Row="1" Visibility="Collapsed" HorizontalAlignment="Center"
+                           VerticalAlignment="Center" Style="{StaticResource MutedLabel}" FontSize="12"
+                           Text="No captures match your search." />
+            </Grid>
             <Button x:Name="ShowTrayButton" Visibility="Collapsed" HorizontalAlignment="Center"
                     VerticalAlignment="Bottom" Margin="0,0,0,16" Style="{StaticResource EdSecondaryButton}"
                     Click="ToggleTray_Click" ToolTip="Show library">

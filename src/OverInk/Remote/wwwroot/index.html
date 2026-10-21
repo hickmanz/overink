@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0f1115" />
   <title>OverInk Remote</title>
-  <link rel="stylesheet" href="styles.css?v=22" />
+  <link rel="stylesheet" href="styles.css?v=24" />
 </head>
 <body>
   <div id="root">
@@ -148,6 +148,11 @@
 
       <pre id="log" class="ui panel-hidden" aria-label="Connection log"></pre>
 
+      <!-- Select tool: floats beside the selection -->
+      <div id="selBar" class="ui sel-bar panel-hidden">
+        <button type="button" id="selDeleteBtn" class="dock-btn danger" aria-label="Delete selection" title="Delete selection"></button>
+      </div>
+
       <div id="dock" class="ui dock" role="toolbar" aria-label="Drawing tools">
         <button type="button" id="dockGrip" class="dock-btn grip" aria-label="Move toolbar" title="Drag to move the toolbar to another edge"></button>
         <span class="divider"></span>
@@ -155,6 +160,7 @@
           <!-- Pen / line / arrow / rectangle / ellipse live behind this one button; it shows the current one -->
           <button type="button" id="toolBtn" class="dock-btn has-menu" aria-label="Drawing tool" title="Drawing tool" aria-haspopup="true"></button>
           <button type="button" id="eraserBtn" class="dock-btn" aria-label="Eraser" title="Eraser"></button>
+          <button type="button" id="selectBtn" class="dock-btn doc-only" aria-label="Select" title="Select: pick, move, recolor or delete ink" aria-pressed="false"></button>
           <button type="button" id="rulerBtn" class="dock-btn" aria-label="Ruler" title="Ruler: draw along its edge; move it with two fingers" aria-pressed="false"></button>
         </div>
         <span class="divider"></span>
@@ -185,6 +191,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=50"></script>
+  <script type="module" src="app.js?v=51"></script>
 </body>
 </html>

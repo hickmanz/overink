@@ -13,6 +13,7 @@ public sealed class CaptureLibrary : IDisposable
 
     private readonly string _folder;
     private FileSystemWatcher? _watcher;
+    private readonly LibraryOrder _order;
 
     public CaptureLibrary(string? customFolder = null)
     {
@@ -24,6 +25,7 @@ public sealed class CaptureLibrary : IDisposable
         Directory.CreateDirectory(_folder);
         Directory.CreateDirectory(SidecarDirectory);
         TryHideSidecarFolder();
+        _order = new LibraryOrder(Path.Combine(SidecarDirectory, "order.json"));
     }
 
     public string FolderPath => _folder;
@@ -40,12 +42,25 @@ public sealed class CaptureLibrary : IDisposable
             IncludeSubdirectories = true,
             NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime
         };
-        _watcher.Created += (_, _) => RaiseChanged();
-        _watcher.Deleted += (_, _) => RaiseChanged();
+        // Our own saves write "x.png.tmp" and then swap it in; only the final swap is worth reporting.
+        _watcher.Created += (_, e) =>
+        {
+            if (!IsTempFile(e.Name))
+            {
+                RaiseChanged();
+            }
+        };
+        _watcher.Deleted += (_, e) =>
+        {
+            if (!IsTempFile(e.Name))
+            {
+                RaiseChanged();
+            }
+        };
         _watcher.Renamed += (_, _) => RaiseChanged();
         _watcher.Changed += (_, e) =>
         {
-            if (e.Name is null || e.Name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+            if (e.Name is null || IsTempFile(e.Name))
             {
                 return;
             }
@@ -54,6 +69,9 @@ public sealed class CaptureLibrary : IDisposable
         };
         _watcher.EnableRaisingEvents = true;
     }
+
+    private static bool IsTempFile(string? name) =>
+        name is not null && name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
 
     public IReadOnlyList<CaptureItem> Enumerate()
     {
@@ -67,8 +85,44 @@ public sealed class CaptureLibrary : IDisposable
             .Select(TryCreateItem)
             .Where(item => item is not null)
             .Cast<CaptureItem>()
-            .OrderByDescending(item => item.CreatedAt)
+            .OrderByDescending(item => _order.SortKey(item.Id, item.CreatedAt))
             .ToList();
+    }
+
+    /// <summary>The newest <paramref name="limit"/> captures, in library order (what the editor's library bar shows).</summary>
+    public IReadOnlyList<CaptureItem> EnumerateRecent(int limit) => Enumerate().Take(Math.Max(0, limit)).ToList();
+
+    /// <summary>
+    /// Fixes the order of the first captures in the library: <paramref name="itemsFrontFirst"/> becomes the new
+    /// front of the library, in exactly that order (used when cards are dragged around in the library bar).
+    /// Captures not listed keep their place after them.
+    /// </summary>
+    public void SetFrontOrder(IReadOnlyList<CaptureItem> itemsFrontFirst)
+    {
+        if (itemsFrontFirst.Count == 0)
+        {
+            return;
+        }
+
+        _order.MoveToFront(itemsFrontFirst.Select(i => i.Id).ToList(), Enumerate().Select(i => i.Id), DateTime.UtcNow);
+        RaiseChanged();
+    }
+    /// <summary>
+    /// Pulls captures to the front of the library, keeping their current order relative to each other. Their
+    /// files are not touched; the new position is remembered in the library's own order file.
+    /// </summary>
+    public void MoveToFront(IEnumerable<CaptureItem> items)
+    {
+        var wanted = new HashSet<string>(items.Select(i => i.Id), StringComparer.OrdinalIgnoreCase);
+        var all = Enumerate();
+        var ids = all.Where(i => wanted.Contains(i.Id)).Select(i => i.Id).ToList();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        _order.MoveToFront(ids, all.Select(i => i.Id), DateTime.UtcNow);
+        RaiseChanged();
     }
 
     /// <summary>
@@ -207,7 +261,15 @@ public sealed class CaptureLibrary : IDisposable
     /// coordinates, e.g. what was drawn on the overlay) is stored as editable ink on top of it, and the
     /// flattened PNG shows both. Must run on the UI thread when ink is given (flattening renders WPF visuals).
     /// </summary>
-    public CaptureItem CreateFromCapture(BitmapSource capture, StrokeCollection? ink = null, double veil = 0)
+    public CaptureItem CreateFromCapture(BitmapSource capture, StrokeCollection? ink = null, double veil = 0) =>
+        CreateFromCapture(capture, ink, veil, out _);
+
+    /// <summary>
+    /// Same as <see cref="CreateFromCapture(BitmapSource, StrokeCollection?, double)"/>, and also hands back the
+    /// flattened image so the caller (e.g. the clipboard copy) doesn't have to render it a second time.
+    /// </summary>
+    public CaptureItem CreateFromCapture(
+        BitmapSource capture, StrokeCollection? ink, double veil, out BitmapSource flattened)
     {
         var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         var baseName = $"Capture_{stamp}";
@@ -220,10 +282,26 @@ public sealed class CaptureLibrary : IDisposable
 
         ink ??= new StrokeCollection();
         veil = Math.Clamp(veil, 0, MaxVeil);
-        var flattened = ink.Count == 0 && veil <= 0 ? capture : CaptureRenderer.Flatten(capture, ink, veil);
+        var plain = ink.Count == 0 && veil <= 0;
+        flattened = plain ? capture : CaptureRenderer.Flatten(capture, ink, veil);
 
-        SaveBitmap(flattened, flattenedPath);
-        WriteSidecarOriginal(baseName, capture);
+        var originalPath = SidecarPath(baseName, ".orig.png");
+        if (plain)
+        {
+            // The flattened image *is* the original: encode once and copy, instead of encoding the same pixels twice.
+            SaveBitmap(flattened, flattenedPath);
+            File.Copy(flattenedPath, originalPath, overwrite: true);
+        }
+        else
+        {
+            var shown = flattened;
+            RunBoth(
+                () => SaveBitmap(shown, flattenedPath),
+                () => WriteSidecarOriginal(baseName, capture),
+                shown,
+                capture);
+        }
+
         WriteStrokes(baseName, ink);
         WriteVeil(baseName, veil);
 
@@ -234,7 +312,6 @@ public sealed class CaptureLibrary : IDisposable
             SidecarBaseName = baseName
         };
     }
-
     public string OriginalPathFor(CaptureItem item) =>
         item.HasEditableSidecars
             ? SidecarPath(item.SidecarBaseName!, ".orig.png")
@@ -270,13 +347,29 @@ public sealed class CaptureLibrary : IDisposable
         BitmapSource original,
         StrokeCollection strokes,
         BitmapSource flattened,
-        double veil = 0)
+        double veil = 0,
+        bool originalChanged = true)
     {
-        SaveBitmap(flattened, item.FlattenedPath);
+        // The original only changes when the capture is cropped (or first promoted); re-encoding it on every
+        // save was about half of the cost of a save. It is still written if its file is missing.
+        var writeOriginal = item.HasEditableSidecars &&
+            (originalChanged || !File.Exists(SidecarPath(item.SidecarBaseName!, ".orig.png")));
+        if (writeOriginal)
+        {
+            var baseName = item.SidecarBaseName!;
+            RunBoth(
+                () => SaveBitmap(flattened, item.FlattenedPath),
+                () => WriteSidecarOriginal(baseName, original),
+                flattened,
+                original);
+        }
+        else
+        {
+            SaveBitmap(flattened, item.FlattenedPath);
+        }
 
         if (item.HasEditableSidecars)
         {
-            WriteSidecarOriginal(item.SidecarBaseName!, original);
             WriteStrokes(item.SidecarBaseName!, strokes);
             WriteVeil(item.SidecarBaseName!, veil);
         }
@@ -298,6 +391,7 @@ public sealed class CaptureLibrary : IDisposable
         }
 
         File.Move(item.FlattenedPath, newFlattened);
+        _order.Rename(item.Id, newBaseName);
 
         string? newSidecar = item.SidecarBaseName;
         if (item.HasEditableSidecars)
@@ -407,6 +501,7 @@ public sealed class CaptureLibrary : IDisposable
 
     public void Delete(CaptureItem item)
     {
+        _order.Remove(item.Id);
         if (File.Exists(item.FlattenedPath))
         {
             File.Delete(item.FlattenedPath);
@@ -483,6 +578,33 @@ public sealed class CaptureLibrary : IDisposable
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Runs two PNG encodes side by side (they dominate the cost of a save) when both images can be used from
+    /// another thread, i.e. are frozen; otherwise one after the other.
+    /// </summary>
+    private static void RunBoth(Action first, Action second, BitmapSource a, BitmapSource b)
+    {
+        static bool Shareable(BitmapSource s)
+        {
+            if (!s.IsFrozen && s.CanFreeze)
+            {
+                s.Freeze();
+            }
+
+            return s.IsFrozen;
+        }
+
+        if (Shareable(a) && Shareable(b))
+        {
+            Parallel.Invoke(first, second);
+        }
+        else
+        {
+            first();
+            second();
         }
     }
 

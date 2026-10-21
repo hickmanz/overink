@@ -32,6 +32,11 @@ public partial class EditorWindow : Window
     private CaptureItem? _currentItem;
     /// <summary>Library revision of the current capture as last loaded or saved here; detects edits made elsewhere (iPad).</summary>
     private string? _loadedRevision;
+    /// <summary>True when the open capture's original image changed (a crop) and must be re-encoded on save.</summary>
+    private bool _originalChanged;
+    /// <summary>Saves still being written on a worker thread, by capture path. UI thread only.</summary>
+    private readonly Dictionary<string, Task> _pendingSaves = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Windows.Threading.DispatcherTimer _libraryChangeTimer;
     private BitmapSource _originalSource = null!;
     private bool _isDirty;
     private double _veil;
@@ -58,7 +63,7 @@ public partial class EditorWindow : Window
     private readonly List<HistoryEntry> _redoStack = new();
     private bool _applyingHistory;
     private Color _penColor;
-    private SketchTool _tool = SketchTool.Pen;
+    private SketchTool _tool = SketchTool.Select;
     private bool _shapeDragging;
     private Point _shapeStart;
     private UIElement? _shapePreview;
@@ -94,7 +99,7 @@ public partial class EditorWindow : Window
         EditorColorPicker.SetColor(penColor);
         EditorColorPicker.ColorChanged += (_, color) =>
         {
-            ApplyPenColor(color);
+            ApplyColorChoice(color);
             UpdateSwatchSelection();
         };
         EditorColorPicker.SaveRequested += (_, color) => _customColors.Add(color);
@@ -108,9 +113,24 @@ public partial class EditorWindow : Window
         UpdateEmptyState();
         UpdateDocInfo();
 
-        // Pen is the starting tool; without this the custom pen cursor only appears after picking a tool.
+        // Select is the starting tool; this sets up its hit-testing layer and the matching side panel.
         ApplyEditingMode();
+        UpdateToolPanels();
 
+        // One save touches several files, each raising a change event; settle before touching the tray.
+        _libraryChangeTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        _libraryChangeTimer.Tick += (_, _) =>
+        {
+            if (_reordering)
+            {
+                // The cards are mid-drag; refresh once the drop is done (the timer keeps ticking until then).
+                return;
+            }
+
+            _libraryChangeTimer.Stop();
+            RefreshTray(keepSelection: true);
+            ReloadIfChangedExternally();
+        };
         _library.LibraryChanged += OnLibraryChanged;
         SourceInitialized += (_, _) => DarkTitleBar.Apply(this);
         Loaded += (_, _) =>
@@ -120,13 +140,17 @@ public partial class EditorWindow : Window
         };
         SizeChanged += (_, _) => UpdateZoom();
         Deactivated += (_, _) => TrySaveCurrent();
-        Closing += (_, _) => TrySaveCurrent();
+        Closing += (_, _) =>
+        {
+            TrySaveCurrent();
+            FlushPendingSaves();
+        };
         PreviewKeyDown += EditorWindow_PreviewKeyDown;
     }
 
     public void OpenItem(CaptureItem item)
     {
-        TrySaveCurrent();
+        TrySaveCurrent(background: true);
         LoadItem(item);
         RefreshTray(keepSelection: true);
         SelectItemInTray(item);
@@ -141,8 +165,8 @@ public partial class EditorWindow : Window
     {
         Dispatcher.BeginInvoke(() =>
         {
-            RefreshTray(keepSelection: true);
-            ReloadIfChangedExternally();
+            _libraryChangeTimer.Stop();
+            _libraryChangeTimer.Start();
         });
     }
 
@@ -152,8 +176,9 @@ public partial class EditorWindow : Window
     /// </summary>
     private void ReloadIfChangedExternally()
     {
-        if (_currentItem is null || _loadingDocument)
+        if (_currentItem is null || _loadingDocument || _pendingSaves.ContainsKey(_currentItem.FlattenedPath))
         {
+            // Nothing open, or our own save of it is still being written (it is not an outside change).
             return;
         }
 
@@ -180,19 +205,70 @@ public partial class EditorWindow : Window
         ShowStatus("Updated from iPad");
     }
 
-    private void RefreshTray(bool keepSelection)
+    private void RefreshTray(bool keepSelection, bool preserveScroll = false)
     {
         var selectedPath = (_currentItem?.FlattenedPath);
-        _trayEntries.Clear();
-        foreach (var item in _library.Enumerate())
+
+        // Reuse the existing cards (and their already-decoded thumbnails); only new captures get a new one.
+        var all = _library.Enumerate();
+        var bar = all.Take(LibraryBarLimit).ToList();
+        if (selectedPath is not null &&
+            !bar.Any(i => string.Equals(i.FlattenedPath, selectedPath, StringComparison.OrdinalIgnoreCase)) &&
+            all.FirstOrDefault(i => string.Equals(i.FlattenedPath, selectedPath, StringComparison.OrdinalIgnoreCase)) is { } openItem)
         {
-            _trayEntries.Add(new CaptureTrayEntry(item));
+            // The open capture is older than the bar's window (opened from the grid): keep it visible up front.
+            bar.Insert(0, openItem);
+            bar.RemoveAt(bar.Count - 1);
         }
 
-        LibraryList.ItemsSource = null;
-        LibraryList.ItemsSource = _trayEntries;
-        TrayCountLabel.Text = _trayEntries.Count == 0 ? string.Empty : _trayEntries.Count.ToString();
+        var existing = _trayEntries.ToDictionary(e => e.Item.FlattenedPath, StringComparer.OrdinalIgnoreCase);
+        var next = new List<CaptureTrayEntry>();
+        foreach (var item in bar)
+        {
+            if (existing.TryGetValue(item.FlattenedPath, out var entry))
+            {
+                entry.Update(item);
+                entry.RefreshThumbnail();
+                next.Add(entry);
+            }
+            else
+            {
+                next.Add(new CaptureTrayEntry(item));
+            }
+        }
+
+        var unchanged = next.Count == _trayEntries.Count && next.SequenceEqual(_trayEntries);
+        if (!unchanged)
+        {
+            _trayEntries.Clear();
+            _trayEntries.AddRange(next);
+            var scroll = preserveScroll ? FindDescendant<ScrollViewer>(LibraryList) : null;
+            var offset = scroll?.HorizontalOffset ?? 0;
+            LibraryList.ItemsSource = null;
+            LibraryList.ItemsSource = _trayEntries;
+            if (scroll is not null)
+            {
+                // Rebuilding the list jumps it back to the start; put the view back where it was.
+                LibraryList.UpdateLayout();
+                scroll.ScrollToHorizontalOffset(offset);
+            }
+        }
+
+        TrayCountLabel.Text = all.Count == 0
+            ? string.Empty
+            : all.Count > _trayEntries.Count ? $"{_trayEntries.Count} of {all.Count}" : all.Count.ToString();
+        var allVisibility = all.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        AllCapturesHeaderButton.Visibility = allVisibility;
+        if (AllCapturesCard is { } allCard)
+        {
+            allCard.Visibility = allVisibility;
+            allCard.Content = all.Count == 1 ? "1 capture" : $"{all.Count} captures";
+        }
         TrayEmptyLabel.Visibility = _trayEntries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (_gridOpen)
+        {
+            RebuildGrid(all);
+        }
 
         if (keepSelection && selectedPath is not null)
         {
@@ -224,7 +300,10 @@ public partial class EditorWindow : Window
 
     private void LoadItem(CaptureItem item)
     {
+        // If this capture was just left, its save may still be in flight; reading it now would miss the edits.
+        WaitForPendingSave(item);
         CancelShapeDrag();
+        ClearSelection();
         _loadingDocument = true;
         var (original, strokes) = _library.LoadDocument(item);
         _currentItem = item;
@@ -242,6 +321,7 @@ public partial class EditorWindow : Window
         ApplyCanvasDimensions();
         ResetCropToFull();
         _isDirty = false;
+        _originalChanged = false;
         _loadingDocument = false;
         ClearHistory();
         _zoomMode = ZoomMode.Fit;
@@ -287,6 +367,8 @@ public partial class EditorWindow : Window
         CropHandleLayer.Height = h;
         ShapeCanvas.Width = w;
         ShapeCanvas.Height = h;
+        SelectionLayer.Width = w;
+        SelectionLayer.Height = h;
     }
 
     /// <summary>Presets first, then the colors the user saved from the wheel (right-click one to remove it).</summary>
@@ -322,7 +404,7 @@ public partial class EditorWindow : Window
         swatch.Click += (_, _) =>
         {
             EditorColorPicker.SetColor(color);
-            ApplyPenColor(color);
+            ApplyColorChoice(color);
             UpdateSwatchSelection();
         };
         if (saved)
@@ -342,7 +424,8 @@ public partial class EditorWindow : Window
     /// <summary>Marks the swatch matching the pen colour; the wheel button takes over for custom colours.</summary>
     private void UpdateSwatchSelection()
     {
-        var current = ColorHex.ToRgbHex(_penColor);
+        var shown = DisplayColor;
+        var current = ColorHex.ToRgbHex(shown);
         foreach (var child in PresetSwatchesPanel.Children)
         {
             if (child is ToggleButton { Tag: string hex } swatch)
@@ -351,8 +434,8 @@ public partial class EditorWindow : Window
             }
         }
 
-        CustomColorButton.Background = new SolidColorBrush(_penColor);
-        var hasSwatch = _customColors.HasSwatch(_penColor);
+        CustomColorButton.Background = new SolidColorBrush(shown);
+        var hasSwatch = _customColors.HasSwatch(shown);
         CustomColorButton.IsChecked = !hasSwatch;
         EditorColorPicker.SetCanSave(!hasSwatch);
         UpdatePenVisuals();
@@ -379,7 +462,7 @@ public partial class EditorWindow : Window
         var show = CustomColorCard.Visibility != Visibility.Visible;
         if (show)
         {
-            EditorColorPicker.SetColor(_penColor);
+            EditorColorPicker.SetColor(DisplayColor);
         }
 
         CustomColorCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
@@ -419,6 +502,17 @@ public partial class EditorWindow : Window
         }
 
         var size = Math.Max(1, e.NewValue);
+        if (HasSelection)
+        {
+            if (!_syncingSelectionUi)
+            {
+                ApplySelectionWidth(size);
+            }
+
+            UpdatePenVisuals();
+            return;
+        }
+
         var attrs = InkSurface.DefaultDrawingAttributes.Clone();
         attrs.Width = size;
         attrs.Height = size;
@@ -436,7 +530,7 @@ public partial class EditorWindow : Window
 
         var width = Math.Clamp(PenSizeSlider.Value, 1, 24);
         StrokePreviewPath.StrokeThickness = 1.25 + (width - 1) / 23.0 * 6.75;
-        StrokePreviewPath.Stroke = new SolidColorBrush(_penColor);
+        StrokePreviewPath.Stroke = new SolidColorBrush(DisplayColor);
         PenSizeValue.Text = $"{(int)Math.Round(width)} px";
     }
 
@@ -569,6 +663,7 @@ public partial class EditorWindow : Window
             _ => InkCanvasEditingMode.None
         };
         ShapeCanvas.IsHitTestVisible = IsShapeTool(_tool);
+        SelectionLayer.IsHitTestVisible = _tool == SketchTool.Select;
 
         // The pen draws its own cursor (see BrushCursor) so thin strokes never make the pointer vanish.
         var customPenCursor = _tool == SketchTool.Pen && InkSurface.EditingMode == InkCanvasEditingMode.Ink;
@@ -783,6 +878,7 @@ public partial class EditorWindow : Window
     private void Undo()
     {
         FlushVeilHistory();
+        FlushSelectionEdit();
         if (_undoStack.Count == 0 || _currentItem is null)
         {
             return;
@@ -798,6 +894,7 @@ public partial class EditorWindow : Window
     private void Redo()
     {
         FlushVeilHistory();
+        FlushSelectionEdit();
         if (_redoStack.Count == 0 || _currentItem is null)
         {
             return;
@@ -812,6 +909,8 @@ public partial class EditorWindow : Window
 
     private void RunHistory(Action action)
     {
+        // History can remove, restore or reshape the selected ink; start from a clean selection.
+        ClearSelection();
         _applyingHistory = true;
         try
         {
@@ -825,17 +924,21 @@ public partial class EditorWindow : Window
         MarkDirty();
     }
 
-    private void TrySaveCurrent()
+    private void TrySaveCurrent(bool background = false)
     {
         if (_currentItem is null || !_isDirty)
         {
             return;
         }
 
-        SaveCurrent(showToast: false);
+        SaveCurrent(showToast: false, background);
     }
 
-    private void SaveCurrent(bool showToast)
+    /// <param name="background">
+    /// Only valid when the caller is about to leave this capture: the image is flattened here (that needs the UI
+    /// thread) but encoding and writing the files happen on a worker, so switching captures doesn't wait for them.
+    /// </param>
+    private void SaveCurrent(bool showToast, bool background = false)
     {
         if (_currentItem is null)
         {
@@ -843,6 +946,7 @@ public partial class EditorWindow : Window
         }
 
         FlushVeilHistory();
+        FlushSelectionEdit();
         // A plain PNG (dropped into the folder) has no original to keep apart from the veil and ink: give it
         // sidecars first so they stay editable instead of being baked into the only copy of the image.
         if (!_currentItem.HasEditableSidecars)
@@ -850,14 +954,30 @@ public partial class EditorWindow : Window
             _currentItem = _library.PromoteToEditable(_currentItem);
         }
 
+        var item = _currentItem;
+        var original = _originalSource;
+        var veil = _veil;
+        var writeOriginal = _originalChanged;
         var flattened = RenderFlattened();
-        _library.SaveDocument(_currentItem, _originalSource, InkSurface.Strokes, flattened, _veil);
-        _loadedRevision = _library.GetRevision(_currentItem);
+
+        if (background)
+        {
+            var strokes = InkSurface.Strokes.Clone();
+            _isDirty = false;
+            _originalChanged = false;
+            SaveInBackground(item, () => _library.SaveDocument(item, original, strokes, flattened, veil, writeOriginal));
+            return;
+        }
+
+        WaitForPendingSave(item);
+        _library.SaveDocument(item, original, InkSurface.Strokes, flattened, veil, writeOriginal);
+        _loadedRevision = _library.GetRevision(item);
         _isDirty = false;
+        _originalChanged = false;
         UpdateDocInfo();
 
         var entry = _trayEntries.FirstOrDefault(e =>
-            string.Equals(e.Item.FlattenedPath, _currentItem.FlattenedPath, StringComparison.OrdinalIgnoreCase));
+            string.Equals(e.Item.FlattenedPath, item.FlattenedPath, StringComparison.OrdinalIgnoreCase));
         entry?.RefreshThumbnail();
 
         if (showToast)
@@ -866,8 +986,91 @@ public partial class EditorWindow : Window
         }
     }
 
+    private void SaveInBackground(CaptureItem item, Action write)
+    {
+        var path = item.FlattenedPath;
+        _pendingSaves.TryGetValue(path, out var previous);
+        var task = Task.Run(() =>
+        {
+            // Saves of one capture must land in order.
+            try
+            {
+                previous?.Wait();
+            }
+            catch
+            {
+                // The earlier save reports its own failure.
+            }
+
+            write();
+        });
+        _pendingSaves[path] = task;
+
+        task.ContinueWith(
+            t => Dispatcher.BeginInvoke(() =>
+            {
+                if (_pendingSaves.TryGetValue(path, out var current) && ReferenceEquals(current, t))
+                {
+                    _pendingSaves.Remove(path);
+                }
+
+                if (t.IsFaulted)
+                {
+                    OverInk.Remote.RemoteDebugLog.Write($"background save failed for {item.DisplayName}: {t.Exception?.GetBaseException().Message}");
+                    ShowStatus($"Couldn't save {item.DisplayName}");
+                    return;
+                }
+
+                if (_currentItem is not null && !_isDirty &&
+                    string.Equals(_currentItem.FlattenedPath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Still the open capture (the grid kept it loaded): our own write must not look like an outside edit.
+                    _loadedRevision = _library.GetRevision(_currentItem);
+                }
+
+                _trayEntries.FirstOrDefault(e =>
+                    string.Equals(e.Item.FlattenedPath, path, StringComparison.OrdinalIgnoreCase))?.RefreshThumbnail();
+            }),
+            TaskScheduler.Default);
+    }
+
+    /// <summary>Blocks until any background save of this capture has finished (rare: only when going straight back to it).</summary>
+    private void WaitForPendingSave(CaptureItem item)
+    {
+        if (_pendingSaves.TryGetValue(item.FlattenedPath, out var task))
+        {
+            WaitQuietly(task);
+            _pendingSaves.Remove(item.FlattenedPath);
+        }
+    }
+
+    /// <summary>Blocks until every background save has finished (before closing, or before file operations).</summary>
+    private void FlushPendingSaves()
+    {
+        foreach (var task in _pendingSaves.Values.ToArray())
+        {
+            WaitQuietly(task);
+        }
+
+        _pendingSaves.Clear();
+    }
+
+    private static void WaitQuietly(Task task)
+    {
+        try
+        {
+            task.Wait(TimeSpan.FromSeconds(30));
+        }
+        catch
+        {
+            // Reported by the save's own continuation.
+        }
+    }
     private BitmapSource RenderFlattened() =>
         CaptureRenderer.Flatten(_originalSource, InkSurface.Strokes, _veil);
+
+    /// <summary>Gutter (screen px, matching <c>CanvasHost.Margin</c>) kept around the image so edge crop handles can be grabbed.</summary>
+    private const double CanvasMargin = 24;
 
     private void UpdateZoom()
     {
@@ -894,7 +1097,7 @@ public partial class EditorWindow : Window
         {
             ZoomMode.Actual => 1,
             ZoomMode.Free => _freeScale,
-            _ => Math.Min(1, Math.Min(viewportW / imgW, viewportH / imgH))
+            _ => Math.Min(1, Math.Min((viewportW - 2 * CanvasMargin) / imgW, (viewportH - 2 * CanvasMargin) / imgH))
         };
 
         scale = Math.Max(0.05, Math.Min(8, scale));
@@ -904,13 +1107,28 @@ public partial class EditorWindow : Window
         var percent = (int)Math.Round(scale * 100);
         ZoomLabel.Text = $"{percent}%";
 
-        var needsScroll = scale * imgW > viewportW + 1 || scale * imgH > viewportH + 1;
+        var needsScroll = scale * imgW + 2 * CanvasMargin > viewportW + 1 || scale * imgH + 2 * CanvasMargin > viewportH + 1;
         CanvasScroll.HorizontalScrollBarVisibility = needsScroll ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
         CanvasScroll.VerticalScrollBarVisibility = needsScroll ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+        UpdateSelectionVisuals(rebuildMarks: true);
     }
 
     private void EditorWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (_reordering && e.Key == Key.Escape)
+        {
+            FinishReorder(commit: false);
+            e.Handled = true;
+            return;
+        }
+
+        // The canvas is hidden behind the library grid: no tool or edit shortcuts while it is up.
+        if (_gridOpen)
+        {
+            HandleGridKey(e);
+            return;
+        }
+
         if (Keyboard.FocusedElement is TextBox)
         {
             return;
@@ -954,6 +1172,9 @@ public partial class EditorWindow : Window
                 case Key.A: SelectTool(SketchTool.Arrow); break;
                 case Key.R: SelectTool(SketchTool.Rectangle); break;
                 case Key.O: SelectTool(SketchTool.Ellipse); break;
+                case Key.V: SelectTool(SketchTool.Select); break;
+                case Key.Delete or Key.Back when HasSelection: DeleteSelection(); break;
+                case Key.Escape when HasSelection: ClearSelection(); break;
                 default: handled = false; break;
             }
         }
@@ -1061,6 +1282,12 @@ public partial class EditorWindow : Window
     private void SelectTool(SketchTool tool)
     {
         CancelShapeDrag();
+        if (tool != SketchTool.Select)
+        {
+            // Leaving Select drops the selection (and commits any pending color/width edit).
+            ClearSelection();
+        }
+
         _tool = tool;
 
         foreach (var (toggle, mapped) in new[]
@@ -1070,15 +1297,14 @@ public partial class EditorWindow : Window
                      (ArrowToggle, SketchTool.Arrow),
                      (RectangleToggle, SketchTool.Rectangle),
                      (EllipseToggle, SketchTool.Ellipse),
-                     (EraserToggle, SketchTool.Eraser)
+                     (EraserToggle, SketchTool.Eraser),
+                     (SelectToggle, SketchTool.Select)
                  })
         {
             toggle.IsChecked = mapped == tool;
         }
 
-        var erasing = tool == SketchTool.Eraser;
-        PenSection.Visibility = erasing ? Visibility.Collapsed : Visibility.Visible;
-        EraserHint.Visibility = erasing ? Visibility.Visible : Visibility.Collapsed;
+        UpdateToolPanels();
 
         _activeCropHandle = null;
         if (CropHandleLayer.IsMouseCaptured)
@@ -1230,6 +1456,7 @@ public partial class EditorWindow : Window
     {
         InkSurface.Strokes.Transform(new Matrix(1, 0, 0, 1, dx, dy), false);
         _originalSource = source;
+        _originalChanged = true;
         BackgroundImage.Source = source;
         ApplyCanvasDimensions();
         ResetCropToFull();
@@ -1290,7 +1517,7 @@ public partial class EditorWindow : Window
             return;
         }
 
-        TrySaveCurrent();
+        TrySaveCurrent(background: true);
         LoadItem(entry.Item);
     }
 
@@ -1298,12 +1525,40 @@ public partial class EditorWindow : Window
     {
         _dragStart = e.GetPosition(LibraryList);
         _dragEntry = FindTrayEntryFromElement(e.OriginalSource as DependencyObject);
+    }
 
-        // Items are non-focusable (so they don't steal keyboard focus from the canvas), which stops the
-        // ListBox's own click-to-select from firing on most of the card. Select explicitly instead.
-        if (_dragEntry is not null && !ReferenceEquals(LibraryList.SelectedItem, _dragEntry))
+    /// <summary>
+    /// A press on a card either becomes a click (opens it, on release), a drag along the bar (reorders it), or a
+    /// drag out of the bar (copies the image into another app).
+    /// </summary>
+    private void LibraryList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_reordering)
         {
+            FinishReorder(commit: true);
+            e.Handled = true;
+        }
+        else if (_dragEntry is not null &&
+                 ReferenceEquals(_dragEntry, FindTrayEntryFromElement(e.OriginalSource as DependencyObject)) &&
+                 !ReferenceEquals(LibraryList.SelectedItem, _dragEntry))
+        {
+            // Items are non-focusable (so they don't steal keyboard focus from the canvas), which stops the
+            // ListBox's own click-to-select from firing on most of the card. Select explicitly instead.
             LibraryList.SelectedItem = _dragEntry;
+        }
+
+        _dragStart = null;
+        _dragEntry = null;
+    }
+
+    private void LibraryList_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        // Capture lost mid-drag (e.g. alt-tab): drop the move rather than leave the bar half-dragged.
+        if (_reordering)
+        {
+            FinishReorder(commit: false);
+            _dragStart = null;
+            _dragEntry = null;
         }
     }
 
@@ -1315,17 +1570,36 @@ public partial class EditorWindow : Window
         }
 
         var pos = e.GetPosition(LibraryList);
-        if (Math.Abs(pos.X - _dragStart.Value.X) < SystemParameters.MinimumHorizontalDragDistance &&
+        if (!_reordering &&
+            Math.Abs(pos.X - _dragStart.Value.X) < SystemParameters.MinimumHorizontalDragDistance &&
             Math.Abs(pos.Y - _dragStart.Value.Y) < SystemParameters.MinimumVerticalDragDistance)
         {
             return;
         }
 
-        BeginDragOut(_dragEntry);
-        _dragStart = null;
-        _dragEntry = null;
-    }
+        // Pulled out of the bar (up or down): hand the image to the drag-and-drop to other apps instead.
+        if (pos.Y < -ReorderLeaveMargin || pos.Y > LibraryList.ActualHeight + ReorderLeaveMargin)
+        {
+            var entry = _dragEntry;
+            if (_reordering)
+            {
+                FinishReorder(commit: false);
+            }
 
+            _dragStart = null;
+            _dragEntry = null;
+            BeginDragOut(entry);
+            return;
+        }
+
+        if (!_reordering)
+        {
+            BeginReorder(_dragEntry);
+        }
+
+        UpdateReorder(pos);
+        e.Handled = true;
+    }
     private void BeginDragOut(CaptureTrayEntry entry)
     {
         if (!string.Equals(entry.Item.FlattenedPath, _currentItem?.FlattenedPath, StringComparison.OrdinalIgnoreCase))
@@ -1367,10 +1641,10 @@ public partial class EditorWindow : Window
         }
 
         e.Handled = true;
-        ShowTrayContextMenu(entry);
+        ShowTrayContextMenu(entry.Item);
     }
 
-    private void ShowTrayContextMenu(CaptureTrayEntry entry)
+    private void ShowTrayContextMenu(CaptureItem item)
     {
         var menu = new ContextMenu { Style = (Style)FindResource("DarkContextMenu") };
 
@@ -1383,7 +1657,7 @@ public partial class EditorWindow : Window
         };
         header.Children.Add(new TextBlock
         {
-            Text = entry.Title,
+            Text = CaptureTrayEntry.TitleFor(item),
             FontWeight = FontWeights.SemiBold,
             FontSize = 13,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -1391,7 +1665,7 @@ public partial class EditorWindow : Window
         });
         header.Children.Add(new TextBlock
         {
-            Text = entry.Subtitle,
+            Text = CaptureTrayEntry.SubtitleFor(item),
             FontSize = 11,
             Margin = new Thickness(0, 2, 0, 0),
             Foreground = (Brush)FindResource("MutedTextBrush")
@@ -1401,23 +1675,21 @@ public partial class EditorWindow : Window
 
         var open = MenuEntry("Open", "IconImage", () =>
         {
-            SelectEntry(entry);
-            LoadItem(entry.Item);
+            OpenFromContextMenu(item);
         });
         menu.Items.Add(open);
 
         menu.Items.Add(MenuEntry("Copy", "IconCopy", () =>
         {
-            SelectEntry(entry);
-            LoadItem(entry.Item);
+            OpenFromContextMenu(item);
             Copy_Click(this, new RoutedEventArgs());
         }));
 
-        menu.Items.Add(MenuEntry("Duplicate", "IconCopyPlus", () => DuplicateItem(entry)));
-        menu.Items.Add(MenuEntry("Show in Explorer", "IconFolder", () => RevealInExplorer(entry.Item.FlattenedPath)));
-        menu.Items.Add(MenuEntry("Rename…", "IconPencil", () => RenameItem(entry)));
+        menu.Items.Add(MenuEntry("Duplicate", "IconCopyPlus", () => DuplicateItem(item)));
+        menu.Items.Add(MenuEntry("Show in Explorer", "IconFolder", () => RevealInExplorer(item.FlattenedPath)));
+        menu.Items.Add(MenuEntry("Rename…", "IconPencil", () => RenameItem(item)));
         menu.Items.Add(MenuSeparator());
-        menu.Items.Add(MenuEntry("Delete", "IconTrash", () => DeleteItem(entry), danger: true));
+        menu.Items.Add(MenuEntry("Delete", "IconTrash", () => DeleteItem(item), danger: true));
 
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen = true;
@@ -1442,15 +1714,16 @@ public partial class EditorWindow : Window
     }
 
     private Separator MenuSeparator() => new() { Style = (Style)FindResource("DarkMenuSeparator") };
-    private void RenameItem(CaptureTrayEntry entry)
+    private void RenameItem(CaptureItem item)
     {
-        var dialog = new RenameCaptureDialog(entry.Item.DisplayName) { Owner = this };
+        var dialog = new RenameCaptureDialog(item.DisplayName) { Owner = this };
         if (dialog.ShowDialog() != true || string.IsNullOrWhiteSpace(dialog.NewName))
         {
             return;
         }
 
-        var updated = _library.Rename(entry.Item, dialog.NewName);
+        FlushPendingSaves();
+        var updated = _library.Rename(item, dialog.NewName);
         if (updated is null)
         {
             ShowStatus("Rename failed");
@@ -1458,7 +1731,7 @@ public partial class EditorWindow : Window
         }
 
         if (_currentItem is not null &&
-            string.Equals(_currentItem.FlattenedPath, entry.Item.FlattenedPath, StringComparison.OrdinalIgnoreCase))
+            string.Equals(_currentItem.FlattenedPath, item.FlattenedPath, StringComparison.OrdinalIgnoreCase))
         {
             _currentItem = updated;
             Title = $"OverInk — {updated.DisplayName}";
@@ -1468,15 +1741,16 @@ public partial class EditorWindow : Window
         SelectItemInTray(updated);
     }
 
-    private void DuplicateItem(CaptureTrayEntry entry)
+    private void DuplicateItem(CaptureItem item)
     {
         // Save first: unsaved edits to the open capture would otherwise be missing from the copy.
         TrySaveCurrent();
+        FlushPendingSaves();
 
         CaptureItem? copy;
         try
         {
-            copy = _library.Duplicate(entry.Item);
+            copy = _library.Duplicate(item);
         }
         catch
         {
@@ -1489,16 +1763,17 @@ public partial class EditorWindow : Window
             return;
         }
 
+        CloseLibraryGrid();
         LoadItem(copy);
         RefreshTray(keepSelection: true);
         SelectItemInTray(copy);
         ShowStatus("Duplicated");
     }
 
-    private void DeleteItem(CaptureTrayEntry entry)
+    private void DeleteItem(CaptureItem item)
     {
         if (MessageBox.Show(
-                $"Delete \"{entry.Item.DisplayName}\"?",
+                $"Delete \"{item.DisplayName}\"?",
                 "OverInk",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning) != MessageBoxResult.Yes)
@@ -1506,9 +1781,10 @@ public partial class EditorWindow : Window
             return;
         }
 
+        FlushPendingSaves();
         var wasCurrent = _currentItem is not null &&
-                         string.Equals(_currentItem.FlattenedPath, entry.Item.FlattenedPath, StringComparison.OrdinalIgnoreCase);
-        _library.Delete(entry.Item);
+                         string.Equals(_currentItem.FlattenedPath, item.FlattenedPath, StringComparison.OrdinalIgnoreCase);
+        _library.Delete(item);
 
         if (wasCurrent)
         {
@@ -1578,6 +1854,7 @@ public partial class EditorWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _libraryChangeTimer.Stop();
         _library.LibraryChanged -= OnLibraryChanged;
         base.OnClosed(e);
     }

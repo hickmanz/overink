@@ -4,6 +4,7 @@ using System.Windows.Ink;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using OverInk.Editor;
 
 namespace OverInk.Overlay;
 
@@ -16,6 +17,17 @@ public static class ShapeStrokeConverter
     private const int EllipseSteps = 72;
 
     public static IEnumerable<Stroke> ToStrokes(UIElement element)
+    {
+        // Every stroke made for one element shares a group id so the editor selects them as a single entity.
+        var group = StrokeGroups.NewId();
+        foreach (var stroke in BuildStrokes(element))
+        {
+            StrokeGroups.Set(stroke, group);
+            yield return stroke;
+        }
+    }
+
+    private static IEnumerable<Stroke> BuildStrokes(UIElement element)
     {
         switch (element)
         {

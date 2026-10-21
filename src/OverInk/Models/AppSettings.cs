@@ -25,6 +25,8 @@ public sealed class AppSettings
     public string SkippedUpdateVersion { get; set; } = "";
     /// <summary>How many times "Not now" was chosen for <see cref="SkippedUpdateVersion"/>; the startup prompt stops after a few.</summary>
     public int SkippedUpdateCount { get; set; }
+    /// <summary>Also offer GitHub pre-releases (beta tags such as v0.3.0-beta.1) when checking for updates.</summary>
+    public bool IncludeBetaUpdates { get; set; }
     public bool HideToolbarWhenNotDrawing { get; set; }
     /// <summary>Folds pen / line / arrow / rectangle / ellipse into one toolbar button with a picker (the eraser stays out).</summary>
     public bool CompactToolbarTools { get; set; } = true;

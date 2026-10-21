@@ -1,17 +1,39 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows.Threading;
 
 namespace OverInk.Editor;
 
 public sealed class CaptureTrayEntry : INotifyPropertyChanged
 {
+    private readonly Dispatcher _dispatcher;
+    private const int TrayThumbnailHeight = 120;
+
+    private long _shownStamp = -1;
+    private int _loadGeneration;
+
     public CaptureTrayEntry(CaptureItem item)
     {
+        _dispatcher = Dispatcher.CurrentDispatcher;
         Item = item;
         RefreshThumbnail();
     }
 
-    public CaptureItem Item { get; set; }
+    public CaptureItem Item { get; private set; }
+
+    /// <summary>Adopts a fresh description of the same capture (e.g. after a rename or sidecar change).</summary>
+    public void Update(CaptureItem item)
+    {
+        if (string.Equals(item.FlattenedPath, Item.FlattenedPath, StringComparison.OrdinalIgnoreCase) &&
+            item.CreatedAt == Item.CreatedAt &&
+            item.SidecarBaseName == Item.SidecarBaseName)
+        {
+            return;
+        }
+
+        Item = item;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+    }
 
     public string Label => Item.DisplayName;
 
@@ -27,7 +49,10 @@ public sealed class CaptureTrayEntry : INotifyPropertyChanged
         DefaultNamePattern.IsMatch(item.DisplayName) ? FriendlyTime(item.CreatedAt) : item.DisplayName;
 
     /// <summary>Secondary line: only shown for renamed captures (so the time is not lost).</summary>
-    public string Subtitle => DefaultNamePattern.IsMatch(Item.DisplayName) ? string.Empty : FriendlyTime(Item.CreatedAt);
+    public string Subtitle => SubtitleFor(Item);
+
+    public static string SubtitleFor(CaptureItem item) =>
+        DefaultNamePattern.IsMatch(item.DisplayName) ? string.Empty : FriendlyTime(item.CreatedAt);
 
     private static string FriendlyTime(DateTime time)
     {
@@ -57,8 +82,36 @@ public sealed class CaptureTrayEntry : INotifyPropertyChanged
         }
     }
 
-    public void RefreshThumbnail() => Thumbnail = Item.CreateThumbnail();
+    /// <summary>
+    /// Makes the thumbnail match the file on disk. Cheap when nothing changed; otherwise the image is decoded on a
+    /// worker thread so the editor never stalls on it (the old thumbnail stays up meanwhile).
+    /// </summary>
+    public void RefreshThumbnail()
+    {
+        var path = Item.FlattenedPath;
+        var stamp = ThumbnailStore.StampOf(path);
+        if (stamp == _shownStamp && _thumbnail is not null)
+        {
+            return;
+        }
 
+        if (ThumbnailStore.TryGet(path, TrayThumbnailHeight, stamp) is { } cached)
+        {
+            _shownStamp = stamp;
+            Thumbnail = cached;
+            return;
+        }
+
+        var generation = ++_loadGeneration;
+        ThumbnailStore.LoadAsync(Item, TrayThumbnailHeight, stamp, _dispatcher, image =>
+        {
+            if (generation == _loadGeneration)
+            {
+                _shownStamp = stamp;
+                Thumbnail = image;
+            }
+        });
+    }
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
