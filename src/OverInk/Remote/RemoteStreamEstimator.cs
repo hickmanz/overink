@@ -27,15 +27,25 @@ public static class RemoteStreamEstimator
         return Math.Max(1, (int)Math.Max(rect.Width, rect.Height));
     }
 
+    /// <summary>
+    /// Longest edge "auto" (native) is allowed to reach when the whole desktop is streamed. A multi-monitor desktop can
+    /// be tens of megapixels, which would make every frame several MB over Wi-Fi.
+    /// </summary>
+    public const int AutoAllMonitorsMaxEdge = 3840;
+
     public static int GetEffectiveMaxEdge(AppSettings settings)
     {
         if (settings.RemoteMaxEdge <= 0)
         {
-            return GetNativeLongEdgePx(settings);
+            var native = GetNativeLongEdgePx(settings);
+            return IsWholeDesktop(settings) ? Math.Min(native, AutoAllMonitorsMaxEdge) : native;
         }
 
         return Math.Clamp(settings.RemoteMaxEdge, 320, 7680);
     }
+
+    private static bool IsWholeDesktop(AppSettings settings) =>
+        !settings.RemoteRegionEnabled && settings.StreamTarget == StreamTarget.AllMonitors;
 
     public static RemoteStreamEstimate Estimate(AppSettings settings)
     {
@@ -68,11 +78,11 @@ public static class RemoteStreamEstimator
             kbps);
     }
 
-    public static (int MaxEdge, int Fps, int Quality) PresetBalanced(int monitorLongEdge) =>
-        (Math.Min(1920, monitorLongEdge), 10, 75);
+    public static (int MaxEdge, int Fps, int Quality) PresetBalanced(int monitorLongEdge, int widthFactor = 1) =>
+        (Math.Min(1920 * Math.Max(1, widthFactor), monitorLongEdge), 10, 75);
 
-    public static (int MaxEdge, int Fps, int Quality) PresetSharp(int monitorLongEdge) =>
-        (Math.Min(2560, monitorLongEdge), 12, 82);
+    public static (int MaxEdge, int Fps, int Quality) PresetSharp(int monitorLongEdge, int widthFactor = 1) =>
+        (Math.Min(2560 * Math.Max(1, widthFactor), monitorLongEdge), 12, 82);
 
     public static (int MaxEdge, int Fps, int Quality) PresetNative(int monitorLongEdge) =>
         (Math.Min(7680, monitorLongEdge), 10, 95);
@@ -105,6 +115,12 @@ public static class RemoteStreamEstimator
 
     private static string BuildGuidance(double downscaleRatio, int streamLong, int monitorLong, AppSettings settings)
     {
+        if (IsWholeDesktop(settings) && settings.RemoteMaxEdge <= 0 && downscaleRatio < 0.98)
+        {
+            return $"All monitors in one wide image ({streamLong}px wide, {(int)Math.Round(downscaleRatio * 100)}% of native). "
+                + "Use the monitor buttons on the iPad to zoom to one screen; raise the size for a sharper zoom.";
+        }
+
         if (downscaleRatio >= 0.98)
         {
             return "Streaming at full monitor resolution — best for pinch-zoom on remote clients.";

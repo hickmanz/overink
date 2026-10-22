@@ -63,7 +63,16 @@ public sealed record RemoteState(
     bool PressureSensitive = true,
     double ScreenVeil = 0,
     /// <summary>Colors saved on the PC, shown after the presets. Sent even when empty so clients can clear theirs.</summary>
-    IReadOnlyList<string>? CustomColors = null);
+    IReadOnlyList<string>? CustomColors = null,
+    /// <summary>Changes whenever the streamed rectangle changes (new monitor, region, layout), so clients reset their view.</summary>
+    int StreamEpoch = 0,
+    /// <summary>
+    /// The monitors inside the streamed image as 0-1 rectangles of the frame, left to right. Empty unless more than
+    /// one monitor is visible, so clients can offer "zoom to monitor" shortcuts. Sent even when empty to clear them.
+    /// </summary>
+    IReadOnlyList<RemoteMonitorRect>? Monitors = null);
+
+public sealed record RemoteMonitorRect(double X, double Y, double W, double H, bool Primary);
 
 public sealed record RemoteSetPressure(bool Enabled);
 

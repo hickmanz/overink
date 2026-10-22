@@ -137,6 +137,35 @@ public static class DesktopLayout
         return true;
     }
 
+    /// <summary>The part of each monitor that lies inside <paramref name="area"/> (monitors outside it are skipped).</summary>
+    public static IReadOnlyList<(MonitorGeometry Monitor, Rect Pixels)> Intersections(
+        IReadOnlyList<MonitorGeometry> monitors, Rect area)
+    {
+        var parts = new List<(MonitorGeometry, Rect)>();
+        foreach (var monitor in monitors)
+        {
+            var part = Rect.Intersect(monitor.Pixels, area);
+            if (!part.IsEmpty && part.Width > 0 && part.Height > 0)
+            {
+                parts.Add((monitor, part));
+            }
+        }
+
+        return parts;
+    }
+
+    /// <summary>True when the parts leave no uncovered gap in <paramref name="area"/> (monitors do not overlap on Windows).</summary>
+    public static bool CoversFully(IEnumerable<Rect> parts, Rect area)
+    {
+        var covered = 0.0;
+        foreach (var part in parts)
+        {
+            covered += part.Width * part.Height;
+        }
+
+        return covered >= area.Width * area.Height - 1;
+    }
+
     /// <summary>Maps a pixel point to 0-1 fractions of <paramref name="area"/> (not clamped).</summary>
     public static (double Nx, double Ny) PixelsToNormalized(Point pixel, Rect area)
     {

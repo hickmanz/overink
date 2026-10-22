@@ -917,6 +917,11 @@ public sealed class RemoteSketchServer : IDisposable
     private RemoteState BuildState()
     {
         var stream = StreamSizeDips();
+        var streamPixels = StreamTargetResolver.GetStreamPixels(_settings.Current);
+        var monitors = StreamTargetResolver
+            .GetStreamMonitorRects(streamPixels, MonitorHelper.GetAllMonitors())
+            .Select(m => new RemoteMonitorRect(m.Normalized.X, m.Normalized.Y, m.Normalized.Width, m.Normalized.Height, m.IsPrimary))
+            .ToArray();
         return new RemoteState(
             _session.Tool.ToString(),
             ColorHex.ToRgbHex(_session.PenColor),
@@ -927,7 +932,9 @@ public sealed class RemoteSketchServer : IDisposable
             _settings.Current.RemoteRegionEnabled,
             _session.PressureSensitive,
             _session.ScreenVeil,
-            _session.CustomColors.Colors.ToArray());
+            _session.CustomColors.Colors.ToArray(),
+            StreamTargetResolver.GetStreamEpoch(streamPixels),
+            monitors);
     }
 
     private string PickColor()

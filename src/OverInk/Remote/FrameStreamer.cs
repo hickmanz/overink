@@ -74,14 +74,7 @@ public sealed class FrameStreamer : IDisposable
                 using var full = new Bitmap(width, height, PixelFormat.Format32bppArgb);
                 using (var g = Graphics.FromImage(full))
                 {
-                    // .NET 10+ rejects combined SourceCopy|CaptureBlt as an enum value; SourceCopy matches ScreenCaptureService.
-                    g.CopyFromScreen(
-                        (int)bounds.X,
-                        (int)bounds.Y,
-                        0,
-                        0,
-                        new Size(width, height),
-                        CopyPixelOperation.SourceCopy);
+                    CaptureArea(g, bounds, width, height);
                 }
 
                 var maxEdge = RemoteStreamEstimator.GetEffectiveMaxEdge(settings);
@@ -145,6 +138,36 @@ public sealed class FrameStreamer : IDisposable
         }
     }
 
+    /// <summary>Colour of desktop areas no monitor covers, so the iPad shows them as "no screen here" rather than black.</summary>
+    internal static readonly Color GapColor = Color.FromArgb(0x23, 0x25, 0x2a);
+
+    /// <summary>
+    /// Copies the screen area into the graphics surface. With several monitors the streamed rectangle can include
+    /// empty desktop (monitors of different sizes or offsets); those gaps are filled with <see cref="GapColor"/>
+    /// and only the real monitors are captured.
+    /// </summary>
+    private static void CaptureArea(Graphics g, System.Windows.Rect bounds, int width, int height)
+    {
+        var parts = DesktopLayout.Intersections(MonitorHelper.GetAllMonitors(), bounds);
+        if (parts.Count > 0 && !DesktopLayout.CoversFully(parts.Select(p => p.Pixels), bounds))
+        {
+            g.Clear(GapColor);
+            foreach (var (_, part) in parts)
+            {
+                CopyScreen(g, (int)part.X, (int)part.Y, (int)(part.X - bounds.X), (int)(part.Y - bounds.Y),
+                    (int)Math.Max(1, part.Width), (int)Math.Max(1, part.Height));
+            }
+
+            return;
+        }
+
+        CopyScreen(g, (int)bounds.X, (int)bounds.Y, 0, 0, width, height);
+    }
+
+    private static void CopyScreen(Graphics g, int sourceX, int sourceY, int destX, int destY, int width, int height) =>
+        // .NET 10+ rejects combined SourceCopy|CaptureBlt as an enum value; SourceCopy matches ScreenCaptureService.
+        g.CopyFromScreen(sourceX, sourceY, destX, destY, new Size(width, height), CopyPixelOperation.SourceCopy);
+
     private static byte[] BuildBinaryFrame(uint seq, long inkRevision, ushort w, ushort h, byte[] jpeg)
     {
         using var ms = new MemoryStream(13 + jpeg.Length);
@@ -159,11 +182,14 @@ public sealed class FrameStreamer : IDisposable
 
     private static byte[] ComputeThumbHash(Bitmap bitmap)
     {
-        const int tw = 64;
-        const int th = 36;
+        // Keeps the frame's aspect ratio (a 64x36 grid squeezes a wide multi-monitor desktop into too few columns)
+        // and averages the source pixels, so a small change such as one typed character still alters the hash.
+        const int tw = 128;
+        var th = Math.Clamp((int)Math.Round(tw * bitmap.Height / (double)Math.Max(1, bitmap.Width)), 24, 96);
         using var thumb = new Bitmap(tw, th, PixelFormat.Format24bppRgb);
         using (var g = Graphics.FromImage(thumb))
         {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
             g.DrawImage(bitmap, 0, 0, tw, th);
         }
 

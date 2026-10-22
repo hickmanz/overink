@@ -1,5 +1,6 @@
 using System.Windows;
 using OverInk.Models;
+using OverInk.Remote;
 using OverInk.Services;
 using Xunit;
 
@@ -126,6 +127,69 @@ public sealed class StreamTargetResolverTests
 
         Assert.True(pixels.Right <= Secondary.Pixels.Right + 0.001);
         Assert.True(pixels.Bottom <= Secondary.Pixels.Bottom + 0.001);
+    }
+
+    [Fact]
+    public void StreamMonitorRects_WholeDesktop_ListsEachMonitorAsFractions()
+    {
+        var rects = StreamTargetResolver.GetStreamMonitorRects(new Rect(0, 0, 7680, 2880), Monitors);
+
+        Assert.Equal(2, rects.Count);
+        Assert.Equal(new Rect(0, 0, 1, 2160.0 / 2880), rects[0].Normalized);
+        Assert.True(rects[0].IsPrimary);
+        Assert.Equal(3000.0 / 7680, rects[1].Normalized.X, 6);
+        Assert.Equal(2160.0 / 2880, rects[1].Normalized.Y, 6);
+        Assert.Equal(2560.0 / 7680, rects[1].Normalized.Width, 6);
+        Assert.False(rects[1].IsPrimary);
+    }
+
+    [Fact]
+    public void StreamMonitorRects_SingleMonitorOrRegion_IsEmpty()
+    {
+        Assert.Empty(StreamTargetResolver.GetStreamMonitorRects(Primary.Pixels, Monitors));
+        Assert.Empty(StreamTargetResolver.GetStreamMonitorRects(new Rect(100, 100, 800, 600), Monitors));
+    }
+
+    [Fact]
+    public void StreamEpoch_ChangesWithTheStreamedRectangle()
+    {
+        var a = StreamTargetResolver.GetStreamEpoch(Primary.Pixels);
+        Assert.Equal(a, StreamTargetResolver.GetStreamEpoch(Primary.Pixels));
+        Assert.NotEqual(a, StreamTargetResolver.GetStreamEpoch(Secondary.Pixels));
+        Assert.NotEqual(a, StreamTargetResolver.GetStreamEpoch(new Rect(0, 0, 7680, 2880)));
+    }
+
+    [Fact]
+    public void WholeDesktop_HasGapsWhereNoMonitorIs()
+    {
+        var desktop = new Rect(0, 0, 7680, 2880);
+        var parts = DesktopLayout.Intersections(Monitors, desktop);
+
+        Assert.Equal(2, parts.Count);
+        Assert.False(DesktopLayout.CoversFully(parts.Select(p => p.Pixels), desktop));
+        Assert.True(DesktopLayout.CoversFully(
+            DesktopLayout.Intersections(Monitors, Primary.Pixels).Select(p => p.Pixels), Primary.Pixels));
+    }
+
+    [Fact]
+    public void Intersections_ClipToTheArea()
+    {
+        var parts = DesktopLayout.Intersections(Monitors, new Rect(2500, 2000, 1000, 400));
+
+        Assert.Equal(2, parts.Count);
+        Assert.Equal(new Rect(2500, 2000, 1000, 160), parts[0].Pixels);
+        Assert.Equal(new Rect(3000, 2160, 500, 240), parts[1].Pixels);
+    }
+
+    [Fact]
+    public void AutoStreamSize_OfTheWholeDesktop_IsCapped()
+    {
+        var settings = new AppSettings { StreamTarget = StreamTarget.AllMonitors, RemoteMaxEdge = 0 };
+
+        Assert.True(RemoteStreamEstimator.GetEffectiveMaxEdge(settings) <= RemoteStreamEstimator.AutoAllMonitorsMaxEdge);
+
+        settings.RemoteMaxEdge = 6000;
+        Assert.Equal(6000, RemoteStreamEstimator.GetEffectiveMaxEdge(settings));
     }
 
     [Fact]

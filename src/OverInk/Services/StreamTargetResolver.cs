@@ -79,6 +79,38 @@ public static class StreamTargetResolver
         }
     }
 
+    /// <summary>
+    /// The monitors visible inside the streamed rectangle as 0-1 rectangles of it (left to right). Empty unless two
+    /// or more monitors show, since a single screen needs no "zoom to monitor" shortcut.
+    /// </summary>
+    public static IReadOnlyList<(Rect Normalized, bool IsPrimary)> GetStreamMonitorRects(
+        Rect stream, IReadOnlyList<MonitorGeometry> monitors)
+    {
+        var parts = DesktopLayout.Intersections(monitors, stream);
+        if (parts.Count < 2 || stream.Width <= 0 || stream.Height <= 0)
+        {
+            return Array.Empty<(Rect, bool)>();
+        }
+
+        var result = new List<(Rect, bool)>(parts.Count);
+        foreach (var (monitor, pixels) in parts)
+        {
+            result.Add((
+                new Rect(
+                    (pixels.Left - stream.Left) / stream.Width,
+                    (pixels.Top - stream.Top) / stream.Height,
+                    pixels.Width / stream.Width,
+                    pixels.Height / stream.Height),
+                monitor.IsPrimary));
+        }
+
+        return result;
+    }
+
+    /// <summary>A value that changes whenever the streamed rectangle (position or size) changes.</summary>
+    public static int GetStreamEpoch(Rect stream) =>
+        HashCode.Combine((int)stream.X, (int)stream.Y, (int)stream.Width, (int)stream.Height);
+
     /// <summary>Stores a region picked on screen. It is clamped inside the monitor holding most of it.</summary>
     public static void SetRegionFromPixels(AppSettings settings, Rect pixels) =>
         SetRegionFromPixels(settings, pixels, MonitorHelper.GetAllMonitors());

@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0f1115" />
   <title>OverInk Remote</title>
-  <link rel="stylesheet" href="styles.css?v=24" />
+  <link rel="stylesheet" href="styles.css?v=25" />
 </head>
 <body>
   <div id="root">
@@ -139,6 +139,11 @@
           <span class="row-icon" id="resetIcon"></span>
           <span class="row-label">Reset view</span>
         </button>
+        <!-- Only shown while the stream contains more than one monitor -->
+        <div id="monitorRow" class="monitor-row panel-hidden">
+          <span class="row-label">Zoom to</span>
+          <div id="monitorChips" class="monitor-chips"></div>
+        </div>
         <ul class="hints">
           <li><span id="hintPen"></span>Apple Pencil draws</li>
           <li><span id="hintHand"></span>One finger pans</li>
@@ -191,6 +196,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=51"></script>
+  <script type="module" src="app.js?v=52"></script>
 </body>
 </html>

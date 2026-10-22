@@ -134,7 +134,8 @@ public partial class RemoteStreamSettingsControl : UserControl
         _loading = true;
         var s = _settings.Current;
         var est = RemoteStreamEstimator.Estimate(s);
-        var edgeForSlider = s.RemoteMaxEdge <= 0 ? est.MonitorLongEdge : s.RemoteMaxEdge;
+        // "Auto" shows what is really streamed (for the whole desktop that is capped below native).
+        var edgeForSlider = s.RemoteMaxEdge <= 0 ? RemoteStreamEstimator.GetEffectiveMaxEdge(s) : s.RemoteMaxEdge;
         MaxEdgeSlider.Value = Math.Clamp(edgeForSlider, (int)MaxEdgeSlider.Minimum, (int)MaxEdgeSlider.Maximum);
         FpsSlider.Value = Math.Clamp(s.RemoteMaxFps, (int)FpsSlider.Minimum, (int)FpsSlider.Maximum);
         QualitySlider.Value = Math.Clamp(s.RemoteJpegQuality, (int)QualitySlider.Minimum, (int)QualitySlider.Maximum);
@@ -192,11 +193,15 @@ public partial class RemoteStreamSettingsControl : UserControl
     private void PresetEco_Click(object sender, RoutedEventArgs e) =>
         ApplyPreset(RemoteStreamEstimator.PresetEco());
 
+    /// <summary>A wide multi-monitor image needs a longer edge for the same sharpness per monitor.</summary>
+    private int PresetWidthFactor =>
+        _settings is { Current: { StreamTarget: StreamTarget.AllMonitors, RemoteRegionEnabled: false } } ? 2 : 1;
+
     private void PresetBalanced_Click(object sender, RoutedEventArgs e) =>
-        ApplyPreset(RemoteStreamEstimator.PresetBalanced(MonitorLongEdge));
+        ApplyPreset(RemoteStreamEstimator.PresetBalanced(MonitorLongEdge, PresetWidthFactor));
 
     private void PresetSharp_Click(object sender, RoutedEventArgs e) =>
-        ApplyPreset(RemoteStreamEstimator.PresetSharp(MonitorLongEdge));
+        ApplyPreset(RemoteStreamEstimator.PresetSharp(MonitorLongEdge, PresetWidthFactor));
 
     private void PresetNative_Click(object sender, RoutedEventArgs e) =>
         ApplyPreset(RemoteStreamEstimator.PresetNative(MonitorLongEdge));

@@ -48,6 +48,8 @@ const settingsPanel = document.getElementById('settingsPanel');
 const settingsBtn = document.getElementById('settingsBtn');
 const debugLogToggle = document.getElementById('debugLogToggle');
 const resetViewBtn = document.getElementById('resetViewBtn');
+const monitorRow = document.getElementById('monitorRow');
+const monitorChips = document.getElementById('monitorChips');
 const colorBtn = document.getElementById('colorBtn');
 const colorDot = document.getElementById('colorDot');
 const colorPopover = document.getElementById('colorPopover');
@@ -639,6 +641,7 @@ function applyState(state) {
   // (While editing a capture the slider shows that capture's own veil, which the PC doesn't know about.)
   if (typeof state.screenVeil === 'number' && !veilDragging && !docMode) screenVeil = state.screenVeil;
   if (typeof state.pressureSensitive === 'boolean') pressureSensitive = state.pressureSensitive;
+  applyStreamLayout(state);
   if (state.screenW > 0 && state.screenH > 0) {
     liveScreenW = state.screenW;
     liveScreenH = state.screenH;
@@ -649,6 +652,66 @@ function applyState(state) {
     }
   }
   updateUi();
+}
+
+/** Monitors inside the streamed image (0-1 rectangles of the frame); more than one means "zoom to" shortcuts. */
+let streamMonitors = [];
+let streamEpoch = null;
+
+/**
+ * The PC streams a different rectangle after the target monitor, region or display layout changes. Ink copies and
+ * the zoom/pan were relative to the old picture, so drop them (the new frame already shows the real ink).
+ */
+function applyStreamLayout(state) {
+  if (typeof state.streamEpoch === 'number') {
+    if (streamEpoch !== null && streamEpoch !== state.streamEpoch && !docMode) {
+      clearVectorInkLayers();
+      resetView();
+    }
+    streamEpoch = state.streamEpoch;
+  }
+  if (Array.isArray(state.monitors)) {
+    streamMonitors = state.monitors;
+    renderMonitorChips();
+  }
+}
+
+function renderMonitorChips() {
+  monitorChips.textContent = '';
+  monitorRow.classList.toggle('panel-hidden', streamMonitors.length < 2);
+  streamMonitors.forEach((m, i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'monitor-chip';
+    chip.textContent = String(i + 1);
+    chip.title = m.primary ? `Monitor ${i + 1} (main)` : `Monitor ${i + 1}`;
+    chip.addEventListener('click', () => zoomToMonitor(i));
+    monitorChips.appendChild(chip);
+  });
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'monitor-chip';
+  all.textContent = 'All';
+  all.addEventListener('click', () => { resetView(); closePopover(); });
+  if (streamMonitors.length >= 2) monitorChips.appendChild(all);
+}
+
+/** Pans and zooms so one monitor of the stream fills the iPad screen (level, no rotation). */
+function zoomToMonitor(index) {
+  const m = streamMonitors[index];
+  if (!m || docMode) return;
+  updateContentRect();
+  const rx = contentRect.x + m.x * contentRect.w;
+  const ry = contentRect.y + m.y * contentRect.h;
+  const rw = m.w * contentRect.w;
+  const rh = m.h * contentRect.h;
+  if (rw <= 0 || rh <= 0) return;
+  view.rotation = 0;
+  view.scale = clampZoom(Math.min(innerWidth * 0.96 / rw, innerHeight * 0.96 / rh));
+  view.tx = innerWidth / 2 - view.scale * (rx + rw / 2);
+  view.ty = innerHeight / 2 - view.scale * (ry + rh / 2);
+  redraw();
+  closePopover();
 }
 
 function onFrameBuffer(buffer) {
