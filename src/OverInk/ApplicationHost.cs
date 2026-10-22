@@ -123,6 +123,18 @@ public sealed class ApplicationHost : IDisposable
 
         _hotkeyService.ToggleDrawRequested += (_, _) =>
         {
+            if (!_sketchUiVisible)
+            {
+                // Minimized to the tray: bring the toolbar back and start drawing rather than toggling blindly.
+                SetVisible(true);
+                _session.SetMode(InteractionMode.Draw);
+                _session.PersistSettings();
+                _toolbar.Visibility = Visibility.Visible;
+                _toolbar.Activate();
+                _toolbar.ClampToVisibleScreen();
+                return;
+            }
+
             _session.ToggleMode();
             _session.PersistSettings();
         };
@@ -609,6 +621,9 @@ public sealed class ApplicationHost : IDisposable
     {
         SetVisible(true);
         _toolbar.Visibility = Visibility.Visible;
+        // Recover a bar that was lost off-screen (bad saved position, monitor change).
+        _toolbar.ClampToVisibleScreen();
+        _toolbar.Activate();
     }
 
     private void SetVisible(bool visible)

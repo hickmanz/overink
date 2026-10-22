@@ -632,17 +632,31 @@ public partial class ToolbarWindow : Window
             return;
         }
 
+        // PointToScreen yields device pixels; Left/Top are DIPs. Without the conversion the bar flies
+        // off-screen on any display scaled above 100%.
         var screen = PointToScreen(e.GetPosition(this));
+        if (PresentationSource.FromVisual(this)?.CompositionTarget is { } target)
+        {
+            screen = target.TransformFromDevice.Transform(screen);
+        }
+
         Left = screen.X - _dragStart.X;
         Top = screen.Y - _dragStart.Y;
     }
 
     private void DragBar_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        var wasDragging = _dragging;
         _dragging = false;
         if (sender is UIElement element)
         {
             element.ReleaseMouseCapture();
+        }
+
+        if (wasDragging)
+        {
+            // Never leave the bar parked where it can't be grabbed again.
+            ClampToVisibleScreen();
         }
     }
 
