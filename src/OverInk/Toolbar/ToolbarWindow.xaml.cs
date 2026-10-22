@@ -337,9 +337,12 @@ public partial class ToolbarWindow : Window
         // The compact button shows the drawing tool you last used, lit while it's the active one.
         ShapeToolButton.IsChecked = _session.Tool != SketchTool.Eraser;
         ShapeToolIcon.Tag = FindResource("Icon" + _lastShapeTool);
+        var shapeName = DrawShortcutMap.KeyFor(_lastShapeTool) is { } key
+            ? $"{_lastShapeTool} ({key})"
+            : _lastShapeTool.ToString();
         ShapeToolButton.ToolTip = _session.Tool == SketchTool.Eraser
-            ? $"{_lastShapeTool} — click to draw again"
-            : $"{_lastShapeTool} — click again for more tools";
+            ? $"{shapeName} — click to draw again"
+            : $"{shapeName} — click again for more tools";
     }
 
     /// <summary>Shows either the six separate tool buttons or the compact pair (drawing tool + eraser).</summary>

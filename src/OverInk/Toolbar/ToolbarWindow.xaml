@@ -47,22 +47,22 @@
                     <!-- Tools -->
                     <Border VerticalAlignment="Center">
                         <StackPanel x:Name="ToolPanel" Orientation="Horizontal">
-                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Pen" Click="ToolButton_Click" Tag="Pen">
+                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Pen (P)" Click="ToolButton_Click" Tag="Pen">
                                 <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconPen}" />
                             </ToggleButton>
-                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Line" Click="ToolButton_Click" Tag="Line">
+                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Line (L)" Click="ToolButton_Click" Tag="Line">
                                 <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconLine}" />
                             </ToggleButton>
-                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Arrow" Click="ToolButton_Click" Tag="Arrow">
+                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Arrow (A)" Click="ToolButton_Click" Tag="Arrow">
                                 <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconArrow}" />
                             </ToggleButton>
-                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Rectangle" Click="ToolButton_Click" Tag="Rectangle">
+                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Rectangle (R)" Click="ToolButton_Click" Tag="Rectangle">
                                 <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconRectangle}" />
                             </ToggleButton>
-                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Ellipse" Click="ToolButton_Click" Tag="Ellipse">
+                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Ellipse (O)" Click="ToolButton_Click" Tag="Ellipse">
                                 <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconEllipse}" />
                             </ToggleButton>
-                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Eraser" Click="ToolButton_Click" Tag="Eraser">
+                            <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Eraser (E)" Click="ToolButton_Click" Tag="Eraser">
                                 <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconEraser}" />
                             </ToggleButton>
                         </StackPanel>
@@ -81,7 +81,7 @@
                                       Margin="0,0,5,5" IsHitTestVisible="False" />
                             </Grid>
                         </ToggleButton>
-                        <ToggleButton x:Name="EraserQuickButton" Style="{StaticResource DockToolToggle}" ToolTip="Eraser"
+                        <ToggleButton x:Name="EraserQuickButton" Style="{StaticResource DockToolToggle}" ToolTip="Eraser (E)"
                                       Click="ToolButton_Click" Tag="Eraser">
                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconEraser}" />
                         </ToggleButton>
@@ -92,19 +92,19 @@
                                 <StackPanel>
                                     <TextBlock Text="DRAW WITH" Style="{StaticResource SectionLabel}" Margin="4,2,0,8" />
                                     <StackPanel x:Name="ToolOptionsPanel" Orientation="Horizontal">
-                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Pen" Click="ToolButton_Click" Tag="Pen">
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Pen (P)" Click="ToolButton_Click" Tag="Pen">
                                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconPen}" />
                                         </ToggleButton>
-                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Line" Click="ToolButton_Click" Tag="Line">
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Line (L)" Click="ToolButton_Click" Tag="Line">
                                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconLine}" />
                                         </ToggleButton>
-                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Arrow" Click="ToolButton_Click" Tag="Arrow">
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Arrow (A)" Click="ToolButton_Click" Tag="Arrow">
                                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconArrow}" />
                                         </ToggleButton>
-                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Rectangle" Click="ToolButton_Click" Tag="Rectangle">
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Rectangle (R)" Click="ToolButton_Click" Tag="Rectangle">
                                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconRectangle}" />
                                         </ToggleButton>
-                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Ellipse" Click="ToolButton_Click" Tag="Ellipse">
+                                        <ToggleButton Style="{StaticResource DockToolToggle}" ToolTip="Ellipse (O)" Click="ToolButton_Click" Tag="Ellipse">
                                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconEllipse}" />
                                         </ToggleButton>
                                     </StackPanel>
@@ -263,7 +263,7 @@
                         <Button Style="{StaticResource DockButton}" ToolTip="Undo (Ctrl+Z)" Click="Undo_Click">
                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconUndo}" />
                         </Button>
-                        <Button Style="{StaticResource DockButton}" ToolTip="Redo" Click="Redo_Click">
+                        <Button Style="{StaticResource DockButton}" ToolTip="Redo (Ctrl+Y)" Click="Redo_Click">
                             <ContentControl Style="{StaticResource LucideIcon}" Tag="{StaticResource IconRedo}" />
                         </Button>
                         <Button Style="{StaticResource DockButton}" ToolTip="Clear all" Click="Clear_Click">

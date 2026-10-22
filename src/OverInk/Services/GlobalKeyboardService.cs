@@ -15,6 +15,9 @@ public sealed class GlobalKeyboardService : IDisposable
     private const int VkY = 0x59;
     private const int VkControl = 0x11;
     private const int VkShift = 0x10;
+    private const int VkMenu = 0x12;
+    private const int VkLWin = 0x5B;
+    private const int VkRWin = 0x5C;
 
     private readonly SketchSession _session;
     private readonly Func<bool> _isOverlayVisible;
@@ -75,6 +78,12 @@ public sealed class GlobalKeyboardService : IDisposable
             return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
         }
 
+        // The draw-mode right-click menu needs Esc, arrows and Enter itself.
+        if (_session.IsOverlayMenuOpen)
+        {
+            return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+        }
+
         var vk = Marshal.ReadInt32(lParam);
         var ctrl = IsKeyDown(VkControl);
         var shift = IsKeyDown(VkShift);
@@ -104,6 +113,20 @@ public sealed class GlobalKeyboardService : IDisposable
         if (ctrl && _session.UndoStack.CanRedo && ((vk == VkZ && shift) || vk == VkY))
         {
             Application.Current.Dispatcher.BeginInvoke(_redo);
+            return (IntPtr)1;
+        }
+
+        // Same single-letter tool keys as the editor (P pen, E eraser, L line, A arrow, R rectangle, O ellipse).
+        if (_session.Mode == InteractionMode.Draw &&
+            !_session.IsHotkeyCaptureActive &&
+            !ctrl && !shift && !IsKeyDown(VkMenu) && !IsKeyDown(VkLWin) && !IsKeyDown(VkRWin) &&
+            DrawShortcutMap.TryGetTool(vk, out var tool))
+        {
+            Application.Current.Dispatcher.BeginInvoke(() =>
+            {
+                _session.SetTool(tool);
+                _session.PersistSettings();
+            });
             return (IntPtr)1;
         }
 

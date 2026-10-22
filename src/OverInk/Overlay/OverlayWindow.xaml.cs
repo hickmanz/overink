@@ -61,6 +61,7 @@ public partial class OverlayWindow : Window
         ShapeLayer.MouseLeftButtonDown += OnShapeMouseDown;
         ShapeLayer.MouseMove += OnShapeMouseMove;
         ShapeLayer.MouseLeftButtonUp += OnShapeMouseUp;
+        InitializeDrawMenu();
         Loaded += OnLoaded;
         SourceInitialized += OnSourceInitialized;
         DpiChanged += (_, e) => _dpiScale = e.NewDpi.DpiScaleX;

@@ -46,6 +46,9 @@ public sealed class SketchSession
     public SketchTool Tool { get; private set; }
     public InteractionMode Mode { get; private set; } = InteractionMode.PassThrough;
     public bool IsHotkeyCaptureActive { get; set; }
+
+    /// <summary>The draw-mode right-click menu is open: the keyboard hook must leave keys (Esc, arrows) to it.</summary>
+    public bool IsOverlayMenuOpen { get; set; }
     public Color PenColor { get; private set; }
     public double PenThickness { get; private set; }
 
