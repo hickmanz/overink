@@ -47,12 +47,19 @@ public sealed class CaptureRegionOutlineWindow : Window
         };
     }
 
-    /// <summary>Positions the frame over <paramref name="screenDips"/> (screen DIPs).</summary>
-    public void Place(Rect screenDips)
+    /// <summary>Positions the frame over <paramref name="pixels"/> (desktop pixels, on any monitor).</summary>
+    public void Place(Rect pixels) => WindowPlacement.PlaceSettling(this, _ => pixels);
+
+    /// <summary>Shows the frame over the pixel rectangle. Placed after showing too, since WPF positions a window on first show.</summary>
+    public void ShowAt(Rect pixels)
     {
-        Left = screenDips.Left;
-        Top = screenDips.Top;
-        Width = screenDips.Width;
-        Height = screenDips.Height;
+        if (!IsVisible)
+        {
+            Left = -32000;
+            Top = -32000;
+            Show();
+        }
+
+        Place(pixels);
     }
 }

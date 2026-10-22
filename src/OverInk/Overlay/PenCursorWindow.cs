@@ -4,6 +4,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using OverInk.Editor;
 using OverInk.Interop;
+using OverInk.Services;
 
 namespace OverInk.Overlay;
 
@@ -51,16 +52,28 @@ public sealed class PenCursorWindow : Window
         };
     }
 
-    /// <summary>Centers the cursor on <paramref name="screenDips"/> and sizes the ring to <paramref name="diameter"/>.</summary>
-    public void ShowAt(Point screenDips, double diameter)
+    /// <summary>
+    /// Centers the cursor on <paramref name="centerPixel"/> (desktop pixels) and sizes the ring to
+    /// <paramref name="diameterPixels"/>. Pixels (not DIPs) so it lands right on a monitor whose scale differs
+    /// from the one the window last sat on.
+    /// </summary>
+    public void ShowAtPixels(Point centerPixel, double diameterPixels)
     {
-        _cursor.SetDiameter(diameter);
-        Left = screenDips.X - Size / 2;
-        Top = screenDips.Y - Size / 2;
         if (!IsVisible)
         {
+            // Park off-screen for the first show so WPF's default placement never flashes.
+            Left = -32000;
+            Top = -32000;
             Show();
         }
+
+        var scale = WindowPlacement.PlaceSettling(this, s =>
+        {
+            var side = Size * s;
+            return new Rect(centerPixel.X - side / 2, centerPixel.Y - side / 2, side, side);
+        });
+
+        _cursor.SetDiameter(diameterPixels / scale);
     }
 
     public void HideCursor()

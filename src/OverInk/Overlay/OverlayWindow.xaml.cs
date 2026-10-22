@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using OverInk.Input;
+using OverInk.Interop;
 using OverInk.Models;
 using OverInk.Services;
 
@@ -31,8 +32,11 @@ public partial class OverlayWindow : Window
     private Window? _toolbarWindow;
     private HwndSource? _hwndSource;
     private CaptureRegionOutlineWindow? _regionOutline;
-    private Rect? _regionOutlineDips;
+    private Rect? _regionOutlinePixels;
     private PenCursorWindow? _penCursor;
+    private Rect _desktopPixels = new(0, 0, 1, 1);
+    private bool _replacing;
+    private double _dpiScale = 1;
 
     public OverlayWindow(SketchSession session, IStrokeSource remoteStrokeSource)
     {
@@ -59,6 +63,7 @@ public partial class OverlayWindow : Window
         ShapeLayer.MouseLeftButtonUp += OnShapeMouseUp;
         Loaded += OnLoaded;
         SourceInitialized += OnSourceInitialized;
+        DpiChanged += (_, e) => _dpiScale = e.NewDpi.DpiScaleX;
         Closed += (_, _) =>
         {
             _hwndSource?.RemoveHook(HitTestHook);
@@ -172,25 +177,21 @@ public partial class OverlayWindow : Window
     public void SetToolbarWindow(Window toolbarWindow) => _toolbarWindow = toolbarWindow;
 
     /// <summary>
-    /// Shows (or clears, with null) the dashed frame around the iPad stream region. It is a separate window
-    /// excluded from screen capture, and follows this overlay's visibility.
+    /// Shows (or clears, with null) the dashed frame around the iPad stream region (desktop pixels). It is a
+    /// separate window excluded from screen capture, and follows this overlay's visibility.
     /// </summary>
-    public void SetCaptureRegionOutline(Rect? regionDips)
+    public void SetCaptureRegionOutline(Rect? regionPixels)
     {
-        _regionOutlineDips = regionDips is { Width: > 0, Height: > 0 } ? regionDips : null;
+        _regionOutlinePixels = regionPixels is { Width: > 0, Height: > 0 } ? regionPixels : null;
         SyncRegionOutline();
     }
 
     private void SyncRegionOutline()
     {
-        if (_regionOutlineDips is { } rect && IsVisible)
+        if (_regionOutlinePixels is { } rect && IsVisible)
         {
             _regionOutline ??= new CaptureRegionOutlineWindow();
-            _regionOutline.Place(rect);
-            if (!_regionOutline.IsVisible)
-            {
-                _regionOutline.Show();
-            }
+            _regionOutline.ShowAt(rect);
         }
         else if (_regionOutline is { IsVisible: true })
         {
@@ -271,14 +272,66 @@ public partial class OverlayWindow : Window
         }
     }
 
+    // One overlay window spans the whole virtual desktop (every monitor). A single window has a single DPI
+    // scale, so strokes, shapes, undo and remote strokes share one coordinate space (local DIPs); the maths below
+    // converts that to and from desktop pixels, which is what screen capture and the other windows use.
+
+    /// <summary>The rectangle this overlay covers, in desktop pixels (can start at negative coordinates).</summary>
+    public Rect DesktopPixels => _desktopPixels;
+
+    /// <summary>
+    /// Pixels per overlay DIP. Strokes are sized in DIPs, so one pen width is the same on every monitor.
+    /// Cached (updated when the window is placed or its DPI changes) so it can be read from any thread.
+    /// </summary>
+    public double DpiScale => _dpiScale;
+
+    public Point LocalDipsToDesktopPixels(Point local)
+    {
+        var scale = DpiScale;
+        return new Point(_desktopPixels.Left + local.X * scale, _desktopPixels.Top + local.Y * scale);
+    }
+
+    public Point DesktopPixelsToLocalDips(Point pixel)
+    {
+        var scale = DpiScale;
+        return new Point((pixel.X - _desktopPixels.Left) / scale, (pixel.Y - _desktopPixels.Top) / scale);
+    }
+
+    /// <summary>Overlay DIPs to the pixels of an image whose top-left is <paramref name="imageOrigin"/> on the desktop.</summary>
+    public Matrix LocalDipsToImagePixels(Point imageOrigin)
+    {
+        var scale = DpiScale;
+        return new Matrix(scale, 0, 0, scale, _desktopPixels.Left - imageOrigin.X, _desktopPixels.Top - imageOrigin.Y);
+    }
+
+    /// <summary>
+    /// Covers every monitor with this window. Called at start-up and whenever the monitor layout changes. The
+    /// window is positioned in physical pixels; if Windows resizes it because the DPI of its monitor changed,
+    /// it is placed again until the size settles.
+    /// </summary>
+    public void PlaceOverDesktop()
+    {
+        if (_replacing)
+        {
+            return;
+        }
+
+        _replacing = true;
+        try
+        {
+            var desktop = MonitorHelper.GetVirtualDesktopPixels();
+            _dpiScale = WindowPlacement.PlaceSettling(this, _ => desktop);
+            _desktopPixels = desktop;
+        }
+        finally
+        {
+            _replacing = false;
+        }
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-        Left = geometry.Dips.Left;
-        Top = geometry.Dips.Top;
-        Width = geometry.Dips.Width;
-        Height = geometry.Dips.Height;
-
+        PlaceOverDesktop();
         ClickThroughHelper.SetClickThrough(this, _session.Mode == InteractionMode.PassThrough);
         InkSurface.Focus();
     }
@@ -292,6 +345,13 @@ public partial class OverlayWindow : Window
 
     private IntPtr HitTestHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg == NativeMethods.WmDpiChanged && IsLoaded)
+        {
+            // Windows (and WPF) resize the window to suit the new DPI. Put it back over the whole desktop.
+            Dispatcher.BeginInvoke(PlaceOverDesktop, System.Windows.Threading.DispatcherPriority.Normal);
+            return IntPtr.Zero;
+        }
+
         if (msg != WmNcHitTest ||
             _session.Mode != InteractionMode.Draw ||
             _toolbarWindow == null ||
@@ -370,18 +430,18 @@ public partial class OverlayWindow : Window
             return;
         }
 
-        var screen = new Point(Left + position.X, Top + position.Y);
+        var screen = LocalDipsToDesktopPixels(position);
 
         // Over the toolbar the normal pointer is needed (the toolbar is click-through for the overlay there).
         if (_toolbarWindow is { IsVisible: true } toolbar &&
-            new Rect(toolbar.Left, toolbar.Top, toolbar.ActualWidth, toolbar.ActualHeight).Contains(screen))
+            DpiHelper.GetPhysicalScreenRect(toolbar, paddingDips: 0).Contains(screen))
         {
             HidePenCursor();
             return;
         }
 
         _penCursor ??= new PenCursorWindow();
-        _penCursor.ShowAt(screen, _session.PenThickness);
+        _penCursor.ShowAtPixels(screen, _session.PenThickness * DpiScale);
     }
 
     private void HidePenCursor() => _penCursor?.HideCursor();

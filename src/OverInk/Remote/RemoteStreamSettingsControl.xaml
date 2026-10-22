@@ -2,6 +2,18 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <StackPanel>
+        <TextBlock Text="WHAT THE TABLET SEES" Style="{StaticResource SectionLabel}" />
+        <UniformGrid Columns="3">
+            <Button x:Name="TargetFollowButton" Content="Toolbar screen" Click="TargetFollow_Click"
+                    Style="{StaticResource PresetButton}" ToolTip="The monitor the toolbar is on" />
+            <Button x:Name="TargetMonitorButton" Content="One screen" Click="TargetMonitor_Click"
+                    Style="{StaticResource PresetButton}" ToolTip="A monitor you choose" />
+            <Button x:Name="TargetAllButton" Content="All screens" Click="TargetAll_Click"
+                    Style="{StaticResource PresetButton}" Margin="0" ToolTip="Every monitor as one wide picture" />
+        </UniformGrid>
+        <StackPanel x:Name="MonitorListPanel" Margin="0,8,0,0" Visibility="Collapsed" />
+        <TextBlock x:Name="TargetHintText" Style="{StaticResource RowDesc}" TextWrapping="Wrap" Margin="0,8,0,16" />
+
         <TextBlock Text="STREAM QUALITY" Style="{StaticResource SectionLabel}" />
 
         <!-- Summary card -->

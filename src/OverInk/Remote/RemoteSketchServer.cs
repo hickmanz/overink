@@ -61,7 +61,7 @@ public sealed class RemoteSketchServer : IDisposable
 
     private void OnOverlayStrokesAdded(IReadOnlyList<(Guid Id, System.Windows.Ink.Stroke Stroke)> strokes)
     {
-        var dips = CaptureRegionHelper.GetStreamDips(_settings.Current);
+        var streamPixels = StreamTargetResolver.GetStreamPixels(_settings.Current);
         var snapshots = new List<RemoteStrokeSnapshot>(strokes.Count);
         foreach (var (id, stroke) in strokes)
         {
@@ -69,7 +69,9 @@ public sealed class RemoteSketchServer : IDisposable
             var pts = new float[points.Count * 3];
             for (var i = 0; i < points.Count; i++)
             {
-                var (nx, ny) = CoordinateMapper.DipsToNormalized(new Point(points[i].X, points[i].Y), dips);
+                // Stroke points are overlay DIPs; the iPad wants 0-1 fractions of the streamed rectangle.
+                var pixel = _overlay.LocalDipsToDesktopPixels(new Point(points[i].X, points[i].Y));
+                var (nx, ny) = DesktopLayout.PixelsToNormalized(pixel, streamPixels);
                 pts[i * 3] = (float)nx;
                 pts[i * 3 + 1] = (float)ny;
                 pts[i * 3 + 2] = points[i].PressureFactor;
@@ -364,7 +366,7 @@ public sealed class RemoteSketchServer : IDisposable
 
                     var welcome = await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
-                        var stream = CaptureRegionHelper.GetStreamDips(_settings.Current);
+                        var stream = StreamSizeDips();
                         return new RemoteWelcome(
                             RemoteProtocol.Version,
                             clientId,
@@ -894,15 +896,27 @@ public sealed class RemoteSketchServer : IDisposable
         };
     }
 
+    /// <summary>iPad 0-1 position to overlay DIPs: through the streamed rectangle (desktop pixels) and the overlay's origin and scale.</summary>
     private Point ToDips(double nx, double ny)
     {
-        var dips = CaptureRegionHelper.GetStreamDips(_settings.Current);
-        return CoordinateMapper.NormalizedToDips(nx, ny, dips);
+        var pixel = CoordinateMapper.NormalizedToPixels(nx, ny, StreamTargetResolver.GetStreamPixels(_settings.Current));
+        return _overlay.DesktopPixelsToLocalDips(pixel);
+    }
+
+    /// <summary>
+    /// Size of the streamed rectangle in overlay DIPs. The iPad uses it as the PC's logical screen size, so pen
+    /// widths (DIPs) keep the same proportion to the frame whatever the monitor's scaling.
+    /// </summary>
+    private Size StreamSizeDips()
+    {
+        var pixels = StreamTargetResolver.GetStreamPixels(_settings.Current);
+        var scale = _overlay.DpiScale;
+        return new Size(pixels.Width / scale, pixels.Height / scale);
     }
 
     private RemoteState BuildState()
     {
-        var stream = CaptureRegionHelper.GetStreamDips(_settings.Current);
+        var stream = StreamSizeDips();
         return new RemoteState(
             _session.Tool.ToString(),
             ColorHex.ToRgbHex(_session.PenColor),

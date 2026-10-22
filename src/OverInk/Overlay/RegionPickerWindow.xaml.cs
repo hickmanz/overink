@@ -13,9 +13,13 @@ public partial class RegionPickerWindow : Window
     private Point _start;
     private bool _pressed;
     private bool _dragging;
-    private Rect _monitorDips;
-    private Rect _monitorPixels;
+    // One picker window spans every monitor. Its canvas is in local DIPs (origin at the desktop's top-left);
+    // _desktopPixels / _scale convert to and from desktop pixels.
+    private Rect _desktopPixels;
+    private Rect _cursorMonitorPixels;
     private double _scale = 1;
+    private double _canvasWidth;
+    private double _canvasHeight;
     private WindowHitTester? _windows;
     private Rect? _hoverLocal;
 
@@ -33,29 +37,38 @@ public partial class RegionPickerWindow : Window
                 Cancel();
             }
         };
+        // WPF positions a window by its own Left/Top the first time it shows; place it over the desktop again.
+        Loaded += (_, _) => PlaceOverDesktop();
     }
 
-    public Rect? SelectedDipsRect { get; private set; }
+    /// <summary>The chosen area in desktop pixels (can lie on any monitor).</summary>
+    public Rect? SelectedPixelsRect { get; private set; }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-        _monitorDips = geometry.Dips;
-        _monitorPixels = geometry.Pixels;
-        _scale = _monitorDips.Width > 0 ? _monitorPixels.Width / _monitorDips.Width : 1;
-        Left = _monitorDips.Left;
-        Top = _monitorDips.Top;
-        Width = _monitorDips.Width;
-        Height = _monitorDips.Height;
-        RootCanvas.Width = _monitorDips.Width;
-        RootCanvas.Height = _monitorDips.Height;
-        HintBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        Canvas.SetLeft(HintBar, Math.Max(12, (_monitorDips.Width - HintBar.DesiredSize.Width) / 2));
-        Canvas.SetTop(HintBar, 16);
-        UpdateDimPanels(new Rect(_start, _start));
-
+        _cursorMonitorPixels = MonitorHelper.GetMonitorAtCursor().Pixels;
+        PlaceOverDesktop();
         _windows = WindowHitTester.Capture(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+    }
+
+    private void PlaceOverDesktop()
+    {
+        _desktopPixels = MonitorHelper.GetVirtualDesktopPixels();
+        _scale = WindowPlacement.PlaceSettling(this, _ => _desktopPixels);
+        _canvasWidth = _desktopPixels.Width / _scale;
+        _canvasHeight = _desktopPixels.Height / _scale;
+        RootCanvas.Width = _canvasWidth;
+        RootCanvas.Height = _canvasHeight;
+
+        // The hint sits at the top of the monitor the pointer is on.
+        HintBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var monitorLeft = (_cursorMonitorPixels.Left - _desktopPixels.Left) / _scale;
+        var monitorTop = (_cursorMonitorPixels.Top - _desktopPixels.Top) / _scale;
+        var monitorWidth = _cursorMonitorPixels.Width / _scale;
+        Canvas.SetLeft(HintBar, monitorLeft + Math.Max(12, (monitorWidth - HintBar.DesiredSize.Width) / 2));
+        Canvas.SetTop(HintBar, monitorTop + 16);
+        UpdateDimPanels(new Rect(_start, _start));
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -137,11 +150,11 @@ public partial class RegionPickerWindow : Window
             return;
         }
 
-        SelectedDipsRect = new Rect(
-            _monitorDips.Left + rect.Left,
-            _monitorDips.Top + rect.Top,
-            rect.Width,
-            rect.Height);
+        SelectedPixelsRect = new Rect(
+            _desktopPixels.Left + rect.Left * _scale,
+            _desktopPixels.Top + rect.Top * _scale,
+            rect.Width * _scale,
+            rect.Height * _scale);
         DialogResult = true;
         Close();
         base.OnMouseLeftButtonUp(e);
@@ -159,7 +172,7 @@ public partial class RegionPickerWindow : Window
         Math.Abs(a.X - b.X),
         Math.Abs(a.Y - b.Y));
 
-    /// <summary>Window under the cursor as a rect local to this picker (DIPs), clipped to the monitor.</summary>
+    /// <summary>Window under the cursor as a rect local to this picker (DIPs), clipped to the desktop.</summary>
     private Rect? FindWindowUnder(Point local)
     {
         if (_windows is null)
@@ -168,19 +181,19 @@ public partial class RegionPickerWindow : Window
         }
 
         var pixel = new Point(
-            _monitorPixels.X + local.X * _scale,
-            _monitorPixels.Y + local.Y * _scale);
+            _desktopPixels.X + local.X * _scale,
+            _desktopPixels.Y + local.Y * _scale);
         if (_windows.HitTest(pixel) is not { } px)
         {
             return null;
         }
 
         var dips = new Rect(
-            (px.X - _monitorPixels.X) / _scale,
-            (px.Y - _monitorPixels.Y) / _scale,
+            (px.X - _desktopPixels.X) / _scale,
+            (px.Y - _desktopPixels.Y) / _scale,
             px.Width / _scale,
             px.Height / _scale);
-        dips.Intersect(new Rect(0, 0, _monitorDips.Width, _monitorDips.Height));
+        dips.Intersect(new Rect(0, 0, _canvasWidth, _canvasHeight));
         return dips.IsEmpty || dips.Width < 8 || dips.Height < 8 ? null : dips;
     }
 
@@ -193,9 +206,9 @@ public partial class RegionPickerWindow : Window
         SizeBadge.Visibility = Visibility.Visible;
         SizeBadge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var badge = SizeBadge.DesiredSize;
-        var x = Math.Clamp(rect.Left, 4, Math.Max(4, _monitorDips.Width - badge.Width - 4));
+        var x = Math.Clamp(rect.Left, 4, Math.Max(4, _canvasWidth - badge.Width - 4));
         var y = rect.Bottom + 8;
-        if (y + badge.Height > _monitorDips.Height - 4)
+        if (y + badge.Height > _canvasHeight - 4)
         {
             y = Math.Max(4, rect.Bottom - badge.Height - 8);
         }
@@ -212,8 +225,8 @@ public partial class RegionPickerWindow : Window
     }
     private void UpdateDimPanels(Rect localRect)
     {
-        var w = _monitorDips.Width;
-        var h = _monitorDips.Height;
+        var w = _canvasWidth;
+        var h = _canvasHeight;
         SetRect(DimTop, 0, 0, w, Math.Max(0, localRect.Top));
         SetRect(DimLeft, 0, localRect.Top, Math.Max(0, localRect.Left), localRect.Height);
         SetRect(DimRight, localRect.Right, localRect.Top, Math.Max(0, w - localRect.Right), localRect.Height);

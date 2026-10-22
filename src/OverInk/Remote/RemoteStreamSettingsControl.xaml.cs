@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using OverInk.Models;
 using OverInk.Services;
 
 namespace OverInk.Remote;
@@ -12,7 +14,104 @@ public partial class RemoteStreamSettingsControl : UserControl
     public RemoteStreamSettingsControl()
     {
         InitializeComponent();
-        Loaded += (_, _) => RefreshSummary();
+        Loaded += (_, _) =>
+        {
+            // The streamed monitor changes when the toolbar is dragged to another one; keep the summary honest.
+            StreamTargetResolver.FollowMonitorChanged += OnFollowMonitorChanged;
+            RefreshSummary();
+        };
+        Unloaded += (_, _) => StreamTargetResolver.FollowMonitorChanged -= OnFollowMonitorChanged;
+    }
+
+    private void OnFollowMonitorChanged() => Dispatcher.BeginInvoke(RefreshSummary);
+
+    private void TargetFollow_Click(object sender, RoutedEventArgs e)
+    {
+        _settings?.ApplyStreamTarget(StreamTarget.FollowToolbar);
+        RefreshSummary();
+    }
+
+    private void TargetAll_Click(object sender, RoutedEventArgs e)
+    {
+        _settings?.ApplyStreamTarget(StreamTarget.AllMonitors);
+        RefreshSummary();
+    }
+
+    private void TargetMonitor_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        // Start from the monitor already chosen, otherwise the one the toolbar is on.
+        var chosen = MonitorHelper.FindByDeviceName(_settings.Current.StreamMonitor)
+            ?? MonitorHelper.FindByDeviceName(StreamTargetResolver.FollowMonitorDevice)
+            ?? MonitorHelper.GetPrimaryMonitorGeometry();
+        _settings.ApplyStreamTarget(StreamTarget.SpecificMonitor, chosen.DeviceName);
+        RefreshSummary();
+    }
+
+    private void RefreshTargetUi()
+    {
+        if (_settings is null || TargetFollowButton is null)
+        {
+            return;
+        }
+
+        var s = _settings.Current;
+        MarkSelected(TargetFollowButton, s.StreamTarget == StreamTarget.FollowToolbar);
+        MarkSelected(TargetMonitorButton, s.StreamTarget == StreamTarget.SpecificMonitor);
+        MarkSelected(TargetAllButton, s.StreamTarget == StreamTarget.AllMonitors);
+
+        MonitorListPanel.Children.Clear();
+        var monitors = MonitorHelper.GetAllMonitors();
+        MonitorListPanel.Visibility = s.StreamTarget == StreamTarget.SpecificMonitor && monitors.Count > 1
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        if (MonitorListPanel.Visibility == Visibility.Visible)
+        {
+            var current = MonitorHelper.FindByDeviceName(s.StreamMonitor)?.DeviceName;
+            for (var i = 0; i < monitors.Count; i++)
+            {
+                var monitor = monitors[i];
+                var button = new Button
+                {
+                    Content = $"Screen {i + 1}{(monitor.IsPrimary ? " (main)" : string.Empty)} · " +
+                              $"{(int)monitor.Pixels.Width}×{(int)monitor.Pixels.Height}",
+                    Style = (Style)FindResource("PresetButton"),
+                    Margin = new Thickness(0, 0, 0, 6),
+                    HorizontalContentAlignment = HorizontalAlignment.Left
+                };
+                MarkSelected(button, string.Equals(monitor.DeviceName, current, StringComparison.OrdinalIgnoreCase));
+                var device = monitor.DeviceName;
+                button.Click += (_, _) =>
+                {
+                    _settings?.ApplyStreamTarget(StreamTarget.SpecificMonitor, device);
+                    RefreshSummary();
+                };
+                MonitorListPanel.Children.Add(button);
+            }
+        }
+
+        TargetHintText.Text = s.RemoteRegionEnabled
+            ? "A capture region is set, so the tablet sees just that area. Clear the region to use this choice."
+            : s.StreamTarget switch
+            {
+                StreamTarget.AllMonitors => "Everything you can draw on is streamed as one wide picture. A very wide desktop is heavy on Wi‑Fi; lower the max long edge if it stutters.",
+                StreamTarget.SpecificMonitor => monitors.Count > 1
+                    ? "The tablet always sees the screen picked above. Ink you draw on other screens won't appear there."
+                    : "Only one screen is connected.",
+                _ => monitors.Count > 1
+                    ? "The tablet sees whichever screen the toolbar is on. Drag the toolbar to another screen to switch."
+                    : "The tablet sees your screen."
+            };
+    }
+
+    private void MarkSelected(Button button, bool selected)
+    {
+        button.Background = selected ? (Brush)FindResource("AccentSoftBrush") : (Brush)new SolidColorBrush(Color.FromRgb(0x1C, 0x1C, 0x20));
+        button.BorderBrush = selected ? (Brush)FindResource("AccentBrush") : (Brush)new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF));
     }
 
     public void Bind(SettingsService settings)
@@ -63,6 +162,7 @@ public partial class RemoteStreamSettingsControl : UserControl
             return;
         }
 
+        RefreshTargetUi();
         var est = RemoteStreamEstimator.Estimate(_settings.Current);
         MonitorText.Text =
             $"{est.MonitorLabel} · {est.MonitorPixelWidth}×{est.MonitorPixelHeight} px " +

@@ -84,6 +84,17 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo lpmi);
 
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode)]
+    public static extern bool GetMonitorInfoEx(IntPtr hMonitor, ref MonitorInfoEx lpmi);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    public const int WmDpiChanged = 0x02E0;
+
     public enum MonitorDpiType
     {
         Effective = 0
@@ -106,6 +117,19 @@ internal static class NativeMethods
         public RECT rcMonitor;
         public RECT rcWork;
         public uint dwFlags;
+    }
+
+    /// <summary>MONITORINFOEX: <see cref="MonitorInfo"/> plus the device name (for example \\.\DISPLAY2).</summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MonitorInfoEx
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string szDevice;
     }
 
     [StructLayout(LayoutKind.Sequential)]

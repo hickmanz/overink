@@ -30,6 +30,7 @@ public sealed class ApplicationHost : IDisposable
     private readonly RemoteSketchServer _remoteServer;
     private readonly TaskbarIcon _tray;
     private readonly GlobalKeyboardService _keyboardService;
+    private readonly MonitorWatcher _monitorWatcher;
     private CaptureRegionChromeWindow? _captureRegionChrome;
     private System.Windows.Controls.MenuItem? _remoteMenuItem;
     private readonly CaptureLibrary _captureLibrary;
@@ -66,6 +67,12 @@ public sealed class ApplicationHost : IDisposable
             });
         };
         _remoteServer.JoinApprovalRequired += OnJoinApprovalRequiredAsync;
+
+        // Monitors can be plugged in, removed, or change resolution/scale while the app runs: re-cover the desktop.
+        _monitorWatcher = new MonitorWatcher(Application.Current.Dispatcher);
+        _monitorWatcher.LayoutChanged += _ => OnMonitorLayoutChanged();
+        StreamTargetResolver.FollowMonitorChanged += OnStreamTargetMoved;
+        _settings.StreamTargetChanged += NotifyStreamChanged;
 
         _tray = CreateTrayIcon();
 
@@ -262,6 +269,37 @@ public sealed class ApplicationHost : IDisposable
         return tray;
     }
 
+    private void OnMonitorLayoutChanged()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _overlay.PlaceOverDesktop();
+        _toolbar.ClampToVisibleScreen();
+        SyncCaptureRegionUi();
+        NotifyStreamChanged();
+    }
+
+    /// <summary>The toolbar moved to another monitor: with "follow the toolbar" that is what the iPad now sees.</summary>
+    private void OnStreamTargetMoved()
+    {
+        if (_settings.Current.StreamTarget == StreamTarget.FollowToolbar && !_settings.Current.RemoteRegionEnabled)
+        {
+            NotifyStreamChanged();
+        }
+    }
+
+    /// <summary>Tells connected iPads the streamed rectangle changed (new frame size and coordinate space).</summary>
+    public void NotifyStreamChanged()
+    {
+        if (_remoteServer.IsRunning)
+        {
+            _remoteServer.NotifyCaptureRegionChanged();
+        }
+    }
+
     private async Task ShowPairingWindowAsync()
     {
         if (!_remoteServer.IsRunning)
@@ -416,13 +454,12 @@ public sealed class ApplicationHost : IDisposable
     /// <summary>Captures the screen into the library without opening the editor. Null when cancelled.</summary>
     private CaptureItem? CaptureToLibrary(CaptureRequestKind kind)
     {
-        var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-        if (!TryResolveCapturePixels(kind, geometry, out var pixelBounds))
+        if (!TryResolveCapturePixels(kind, forRemote: false, out var pixelBounds))
         {
             return null;
         }
 
-        var (bitmap, ink, veil) = CaptureScreenWithInk(pixelBounds, geometry);
+        var (bitmap, ink, veil) = CaptureScreenWithInk(pixelBounds);
         var item = _captureLibrary.CreateFromCapture(bitmap, ink, veil, out var flattened);
         AutoCopyToClipboard(flattened, item);
         return item;
@@ -432,7 +469,7 @@ public sealed class ApplicationHost : IDisposable
     /// Grabs the clean screen (overlay ink hidden for the instant of the grab) together with whatever is drawn
     /// on the overlay, as strokes in image-pixel coordinates. The capture keeps that ink editable.
     /// </summary>
-    private (BitmapSource Bitmap, StrokeCollection Ink, double Veil) CaptureScreenWithInk(Rect pixelBounds, MonitorGeometry geometry)
+    private (BitmapSource Bitmap, StrokeCollection Ink, double Veil) CaptureScreenWithInk(Rect pixelBounds)
     {
         // A hidden overlay shows no ink on screen, so none belongs in the capture either.
         var includeInk = _overlay.IsVisible;
@@ -450,9 +487,9 @@ public sealed class ApplicationHost : IDisposable
             return (bitmap, new StrokeCollection(), veil);
         }
 
-        var scaleX = geometry.Dips.Width > 0 ? geometry.Pixels.Width / geometry.Dips.Width : 1;
-        var scaleY = geometry.Dips.Height > 0 ? geometry.Pixels.Height / geometry.Dips.Height : 1;
-        var toImage = new Matrix(scaleX, 0, 0, scaleY, geometry.Pixels.X - pixelBounds.X, geometry.Pixels.Y - pixelBounds.Y);
+        // Overlay DIPs to image pixels: scale by the overlay's DPI, then shift so the captured rectangle's
+        // top-left (a point anywhere on the virtual desktop) becomes the image origin.
+        var toImage = _overlay.LocalDipsToImagePixels(pixelBounds.TopLeft);
         var all = _overlay.ExportInk(toImage);
 
         // Drop strokes entirely outside a region capture.
@@ -477,13 +514,12 @@ public sealed class ApplicationHost : IDisposable
     {
         try
         {
-            var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-            if (!TryResolveCapturePixels(CaptureRequestKind.Default, geometry, out var pixelBounds))
+            if (!TryResolveCapturePixels(CaptureRequestKind.Default, forRemote: true, out var pixelBounds))
             {
                 return (null, "Capture was cancelled.");
             }
 
-            var (bitmap, ink, veil) = CaptureScreenWithInk(pixelBounds, geometry);
+            var (bitmap, ink, veil) = CaptureScreenWithInk(pixelBounds);
             if (ScreenCaptureService.IsBlank(bitmap))
             {
                 return (null, "Capture failed: the PC screen is blank or locked.");
@@ -498,7 +534,11 @@ public sealed class ApplicationHost : IDisposable
         }
     }
 
-    private bool TryResolveCapturePixels(CaptureRequestKind kind, MonitorGeometry geometry, out Rect pixelBounds)
+    /// <summary>
+    /// Works out which rectangle of the desktop (in pixels) a capture grabs. On the PC that is the monitor under
+    /// the pointer (or the stream region, when one is set); from the iPad it is whatever the iPad is looking at.
+    /// </summary>
+    private bool TryResolveCapturePixels(CaptureRequestKind kind, bool forRemote, out Rect pixelBounds)
     {
         pixelBounds = default;
 
@@ -512,25 +552,28 @@ public sealed class ApplicationHost : IDisposable
                 picker.Owner = _toolbar;
             }
 
-            if (picker.ShowDialog() != true || picker.SelectedDipsRect is not { } dipRect)
+            if (picker.ShowDialog() != true || picker.SelectedPixelsRect is not { } picked)
             {
                 RestoreCaptureRegionChromeAfterPick();
                 return false;
             }
 
-            pixelBounds = CaptureRegionHelper.DipsRectToPixels(dipRect, geometry);
+            pixelBounds = picked;
             return true;
         }
 
-        if (_settings.Current.ToolbarCaptureMode == CaptureToolbarMode.FullScreen)
+        var fullScreen = _settings.Current.ToolbarCaptureMode == CaptureToolbarMode.FullScreen;
+        if (forRemote)
         {
-            pixelBounds = geometry.Pixels;
+            pixelBounds = fullScreen
+                ? StreamTargetResolver.GetTargetPixels(_settings.Current)
+                : StreamTargetResolver.GetStreamPixels(_settings.Current);
             return true;
         }
 
-        pixelBounds = _settings.Current.RemoteRegionEnabled
-            ? CaptureRegionHelper.GetStreamPixels(_settings.Current)
-            : geometry.Pixels;
+        pixelBounds = !fullScreen && _settings.Current.RemoteRegionEnabled
+            ? StreamTargetResolver.GetStreamPixels(_settings.Current)
+            : MonitorHelper.GetMonitorAtCursor().Pixels;
         return true;
     }
 
@@ -671,7 +714,7 @@ public sealed class ApplicationHost : IDisposable
     {
         if (_settings.Current.RemoteRegionEnabled)
         {
-            var stream = CaptureRegionHelper.GetStreamDips(_settings.Current);
+            var stream = StreamTargetResolver.GetStreamPixels(_settings.Current);
             _overlay.SetCaptureRegionOutline(stream);
             _toolbar.SetCaptureRegionActive(true);
             ShowCaptureRegionChrome();
@@ -705,7 +748,7 @@ public sealed class ApplicationHost : IDisposable
             Owner = _toolbar
         };
 
-        if (picker.ShowDialog() != true || picker.SelectedDipsRect is not { } rect)
+        if (picker.ShowDialog() != true || picker.SelectedPixelsRect is not { } rect)
         {
             if (_settings.Current.RemoteRegionEnabled)
             {
@@ -719,14 +762,14 @@ public sealed class ApplicationHost : IDisposable
             return;
         }
 
-        CaptureRegionHelper.SetFromDipsRect(_settings.Current, rect);
+        StreamTargetResolver.SetRegionFromPixels(_settings.Current, rect);
         _settings.Save();
         ApplyCaptureRegion();
     }
 
     private void ApplyCaptureRegion()
     {
-        var stream = CaptureRegionHelper.GetStreamDips(_settings.Current);
+        var stream = StreamTargetResolver.GetStreamPixels(_settings.Current);
         _overlay.SetCaptureRegionOutline(stream);
         _toolbar.SetCaptureRegionActive(true);
         ShowCaptureRegionChrome();
@@ -738,7 +781,7 @@ public sealed class ApplicationHost : IDisposable
 
     private void ClearCaptureRegion()
     {
-        CaptureRegionHelper.Clear(_settings.Current);
+        StreamTargetResolver.ClearRegion(_settings.Current);
         _settings.Save();
         SyncCaptureRegionUi();
         if (_remoteServer.IsRunning)
@@ -749,10 +792,12 @@ public sealed class ApplicationHost : IDisposable
 
     private void ShowCaptureRegionChrome()
     {
-        var stream = CaptureRegionHelper.GetStreamDips(_settings.Current);
+        var stream = StreamTargetResolver.GetStreamPixels(_settings.Current);
         _captureRegionChrome ??= CreateCaptureRegionChrome();
         _captureRegionChrome.ApplyRegion(stream);
         _captureRegionChrome.Show();
+        // WPF places a window by its own Left/Top the first time it shows; apply the pixel position again.
+        _captureRegionChrome.ApplyRegion(stream);
     }
 
     private CaptureRegionChromeWindow CreateCaptureRegionChrome()
@@ -980,6 +1025,9 @@ public sealed class ApplicationHost : IDisposable
     public void Dispose()
     {
         _disposed = true;
+        StreamTargetResolver.FollowMonitorChanged -= OnStreamTargetMoved;
+        _settings.StreamTargetChanged -= NotifyStreamChanged;
+        _monitorWatcher.Dispose();
         _updates.Dispose();
         _captureRegionChrome?.Close();
         _editor?.Close();

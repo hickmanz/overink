@@ -22,6 +22,23 @@ public sealed class SettingsService
     /// <summary>Fired when remote stream quality knobs change (live update on LAN server).</summary>
     public event Action? RemoteStreamSettingsChanged;
 
+    /// <summary>Fired when what the iPad sees changes (the stream target or the chosen monitor).</summary>
+    public event Action? StreamTargetChanged;
+
+    /// <summary>Chooses which part of the desktop is streamed. <paramref name="monitorDeviceName"/> only matters for <see cref="StreamTarget.SpecificMonitor"/>.</summary>
+    public void ApplyStreamTarget(StreamTarget target, string? monitorDeviceName = null)
+    {
+        Current.StreamTarget = target;
+        if (target == StreamTarget.SpecificMonitor && !string.IsNullOrWhiteSpace(monitorDeviceName))
+        {
+            Current.StreamMonitor = monitorDeviceName;
+        }
+
+        Save();
+        StreamTargetChanged?.Invoke();
+        RemoteStreamSettingsChanged?.Invoke();
+    }
+
     public SettingsService()
     {
         var folder = Path.Combine(

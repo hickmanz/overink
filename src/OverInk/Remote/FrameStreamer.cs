@@ -67,7 +67,7 @@ public sealed class FrameStreamer : IDisposable
             {
                 // Read before capturing so a frame never claims a revision newer than what it shows.
                 var inkRevision = _overlay.InkRevision;
-                var bounds = CaptureRegionHelper.GetStreamPixels(settings);
+                var bounds = StreamTargetResolver.GetStreamPixels(settings);
                 var width = (int)Math.Max(1, bounds.Width);
                 var height = (int)Math.Max(1, bounds.Height);
 

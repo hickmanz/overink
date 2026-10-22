@@ -8,6 +8,9 @@ public sealed class AppSettings
 {
     public double ToolbarLeft { get; set; } = 80;
     public double ToolbarTop { get; set; } = 80;
+    /// <summary>Toolbar position in desktop pixels. Restores onto the right monitor when monitors have different scales; null for settings saved by older versions (those use <see cref="ToolbarLeft"/>/<see cref="ToolbarTop"/>).</summary>
+    public double? ToolbarPixelX { get; set; }
+    public double? ToolbarPixelY { get; set; }
     /// <summary>True when the toolbar is laid out as a vertical dock (double-click the grip to toggle).</summary>
     public bool ToolbarVertical { get; set; }
     public string PenColor { get; set; } = "#E53935";
@@ -65,11 +68,19 @@ public sealed class AppSettings
 
     public CaptureToolbarMode ToolbarCaptureMode { get; set; } = CaptureToolbarMode.Auto;
 
+    /// <summary>What the iPad sees: the toolbar's monitor, one chosen monitor, or every monitor. A stream region overrides it.</summary>
+    public StreamTarget StreamTarget { get; set; } = StreamTarget.FollowToolbar;
+    /// <summary>Device name (for example \\.\DISPLAY2) of the monitor used by <see cref="StreamTarget.SpecificMonitor"/>.</summary>
+    public string StreamMonitor { get; set; } = string.Empty;
+
     public bool RemoteRegionEnabled { get; set; }
+    /// <summary>The stream region as 0-1 fractions of <see cref="RemoteRegionMonitor"/>.</summary>
     public double RemoteRegionX { get; set; }
     public double RemoteRegionY { get; set; }
     public double RemoteRegionW { get; set; } = 1;
     public double RemoteRegionH { get; set; } = 1;
+    /// <summary>Monitor the region fractions refer to. Empty (regions saved before multi-monitor support) means the primary monitor.</summary>
+    public string RemoteRegionMonitor { get; set; } = string.Empty;
 
     public Color GetPenColor() => ColorHex.Parse(PenColor);
 

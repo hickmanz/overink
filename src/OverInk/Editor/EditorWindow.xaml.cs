@@ -81,9 +81,13 @@ public partial class EditorWindow : Window
         _veilHistoryTimer.Tick += (_, _) => FlushVeilHistory();
 
         // Open large: ~90% of the usable screen (never below the minimums), centered.
-        var work = SystemParameters.WorkArea;
-        Width = Math.Max(MinWidth, Math.Min(work.Width * 0.9, 1900));
-        Height = Math.Max(MinHeight, Math.Min(work.Height * 0.9, 1200));
+        // On the monitor the cursor is on, sized in that monitor's own DIPs.
+        var openMonitor = MonitorHelper.GetMonitorAtCursor();
+        Width = Math.Max(MinWidth, Math.Min(openMonitor.Dips.Width * 0.9, 1900));
+        Height = Math.Max(MinHeight, Math.Min(openMonitor.Dips.Height * 0.9, 1200));
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        SourceInitialized += (_, _) =>
+            WindowPlacement.CenterOnMonitor(this, openMonitor, new Size(Width, Height));
 
         InkSurface.DefaultDrawingAttributes = new DrawingAttributes
         {

@@ -26,6 +26,9 @@ public partial class UpdatePromptWindow : Window
         }
 
         SourceInitialized += (_, _) => DarkTitleBar.Apply(this);
+        // CenterScreen would always pick one monitor; open where the user is working instead.
+        var monitor = MonitorHelper.GetMonitorAtCursor();
+        Loaded += (_, _) => WindowPlacement.CenterOnMonitor(this, monitor);
     }
 
     private void Confirm_Click(object sender, RoutedEventArgs e) => DialogResult = true;

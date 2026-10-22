@@ -16,17 +16,28 @@ public partial class CaptureRegionChromeWindow : Window
     public event EventHandler? AdjustRequested;
     public event EventHandler? ClearRequested;
 
-    public void ApplyRegion(Rect dipRect)
+    /// <summary>
+    /// Puts the header bar centered above the region (desktop pixels), or just inside its top edge when there is
+    /// no room above on that monitor. Placed in pixels so it lines up on a monitor with a different scale.
+    /// Call again after <see cref="Window.Show"/>: WPF positions a window by its own Left/Top the first time it shows.
+    /// </summary>
+    public void ApplyRegion(Rect regionPixels)
     {
-        const double headerHeight = 40;
-        Width = Math.Max(220, dipRect.Width);
-        Left = dipRect.Left + (dipRect.Width - Width) / 2;
-        Top = dipRect.Top - headerHeight;
-        var monitor = MonitorHelper.GetPrimaryMonitorGeometry().Dips;
-        if (Top < monitor.Top)
+        var monitor = MonitorHelper.GetMonitorForPixelRect(regionPixels).Pixels;
+        WindowPlacement.PlaceSettling(this, scale =>
         {
-            Top = dipRect.Top + 8;
-        }
+            const double headerHeightDips = 40;
+            var headerHeight = (IsLoaded && ActualHeight > 0 ? ActualHeight : headerHeightDips) * scale;
+            var width = Math.Max(220 * scale, regionPixels.Width);
+            var left = regionPixels.Left + (regionPixels.Width - width) / 2;
+            var top = regionPixels.Top - headerHeight;
+            if (top < monitor.Top)
+            {
+                top = regionPixels.Top + 8 * scale;
+            }
+
+            return new Rect(left, top, width, headerHeight);
+        });
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)

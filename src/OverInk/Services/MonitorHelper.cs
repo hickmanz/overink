@@ -8,70 +8,137 @@ public static class MonitorHelper
 {
     private const uint MonitorInfoFPrimary = 1;
 
-    public static MonitorGeometry GetPrimaryMonitorGeometry()
+    /// <summary>
+    /// Every attached monitor, ordered left to right then top to bottom. Never empty: if enumeration fails, a
+    /// single fallback monitor sized from the primary screen metrics is returned.
+    /// </summary>
+    public static IReadOnlyList<MonitorGeometry> GetAllMonitors()
     {
-        IntPtr primaryMonitor = IntPtr.Zero;
-        NativeMethods.RECT primaryRect = default;
-        var found = false;
+        var monitors = new List<MonitorGeometry>();
 
         NativeMethods.EnumDisplayMonitors(
             IntPtr.Zero,
             IntPtr.Zero,
             (IntPtr hMonitor, IntPtr _, ref NativeMethods.RECT __, IntPtr ___) =>
             {
-                var info = new NativeMethods.MonitorInfo
+                var info = new NativeMethods.MonitorInfoEx
                 {
-                    cbSize = Marshal.SizeOf<NativeMethods.MonitorInfo>()
+                    cbSize = Marshal.SizeOf<NativeMethods.MonitorInfoEx>(),
+                    szDevice = string.Empty
                 };
-                if (!NativeMethods.GetMonitorInfo(hMonitor, ref info))
+                if (!NativeMethods.GetMonitorInfoEx(hMonitor, ref info))
                 {
                     return true;
                 }
 
-                if ((info.dwFlags & MonitorInfoFPrimary) == 0)
+                var pixels = new Rect(
+                    info.rcMonitor.Left,
+                    info.rcMonitor.Top,
+                    info.rcMonitor.Right - info.rcMonitor.Left,
+                    info.rcMonitor.Bottom - info.rcMonitor.Top);
+
+                if (NativeMethods.GetDpiForMonitor(hMonitor, NativeMethods.MonitorDpiType.Effective, out var dpiX, out var dpiY) != 0)
                 {
-                    return true;
+                    dpiX = 96;
+                    dpiY = 96;
                 }
 
-                primaryMonitor = hMonitor;
-                primaryRect = info.rcMonitor;
-                found = true;
-                return false;
+                monitors.Add(MonitorGeometry.FromPixels(
+                    pixels,
+                    dpiX,
+                    dpiY,
+                    hMonitor,
+                    info.szDevice ?? string.Empty,
+                    (info.dwFlags & MonitorInfoFPrimary) != 0));
+                return true;
             },
             IntPtr.Zero);
 
-        if (!found)
+        if (monitors.Count == 0)
         {
             var fallback = new Rect(
                 0,
                 0,
                 SystemParameters.PrimaryScreenWidth,
                 SystemParameters.PrimaryScreenHeight);
-            return new MonitorGeometry(fallback, fallback, IntPtr.Zero);
+            return new[] { new MonitorGeometry(fallback, fallback, IntPtr.Zero, string.Empty, true) };
         }
 
-        var pixels = new Rect(
-            primaryRect.Left,
-            primaryRect.Top,
-            primaryRect.Right - primaryRect.Left,
-            primaryRect.Bottom - primaryRect.Top);
-
-        if (primaryMonitor == IntPtr.Zero ||
-            NativeMethods.GetDpiForMonitor(primaryMonitor, NativeMethods.MonitorDpiType.Effective, out var dpiX, out var dpiY) != 0)
+        monitors.Sort((a, b) =>
         {
-            dpiX = 96;
-            dpiY = 96;
+            var byLeft = a.Pixels.Left.CompareTo(b.Pixels.Left);
+            return byLeft != 0 ? byLeft : a.Pixels.Top.CompareTo(b.Pixels.Top);
+        });
+        return monitors;
+    }
+
+    /// <summary>The primary monitor. Single-monitor code paths still use this.</summary>
+    public static MonitorGeometry GetPrimaryMonitorGeometry()
+    {
+        var monitors = GetAllMonitors();
+        foreach (var monitor in monitors)
+        {
+            if (monitor.IsPrimary)
+            {
+                return monitor;
+            }
         }
 
-        var scaleX = dpiX / 96.0;
-        var scaleY = dpiY / 96.0;
-        var dips = new Rect(
-            pixels.X / scaleX,
-            pixels.Y / scaleY,
-            pixels.Width / scaleX,
-            pixels.Height / scaleY);
+        return monitors[0];
+    }
 
-        return new MonitorGeometry(dips, pixels, primaryMonitor);
+    /// <summary>Bounding box of all monitors in virtual-desktop pixels (can start at negative coordinates).</summary>
+    public static Rect GetVirtualDesktopPixels() => DesktopLayout.VirtualDesktop(GetAllMonitors());
+
+    /// <summary>The monitor under the mouse cursor (the nearest one if the cursor is somehow off every monitor).</summary>
+    public static MonitorGeometry GetMonitorAtCursor()
+    {
+        var monitors = GetAllMonitors();
+        if (!NativeMethods.GetCursorPos(out var cursor))
+        {
+            return GetPrimaryOf(monitors);
+        }
+
+        return DesktopLayout.NearestMonitor(monitors, new Point(cursor.X, cursor.Y)) ?? GetPrimaryOf(monitors);
+    }
+
+    /// <summary>The monitor that holds most of a rectangle given in desktop pixels.</summary>
+    public static MonitorGeometry GetMonitorForPixelRect(Rect pixels)
+    {
+        var monitors = GetAllMonitors();
+        return DesktopLayout.MonitorForRect(monitors, pixels) ?? GetPrimaryOf(monitors);
+    }
+
+    /// <summary>Finds a monitor by its device name (for example \\.\DISPLAY2), or null if it is not attached.</summary>
+    public static MonitorGeometry? FindByDeviceName(string? deviceName)
+    {
+        if (string.IsNullOrWhiteSpace(deviceName))
+        {
+            return null;
+        }
+
+        foreach (var monitor in GetAllMonitors())
+        {
+            if (string.Equals(monitor.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                return monitor;
+            }
+        }
+
+        return null;
+    }
+
+    private static MonitorGeometry GetPrimaryOf(IReadOnlyList<MonitorGeometry> monitors)
+    {
+        foreach (var monitor in monitors)
+        {
+            if (monitor.IsPrimary)
+            {
+                return monitor;
+            }
+        }
+
+        return monitors[0];
     }
 
     [Obsolete("Use GetPrimaryMonitorGeometry().Dips")]

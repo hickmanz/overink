@@ -16,6 +16,7 @@ public partial class ToolbarWindow : Window
     private readonly SketchSession _session;
     private readonly OverlayWindow _overlay;
     private Point _dragStart;
+    private Point? _dragGrabPixels;
     private bool _dragging;
     private bool _recordingHotkey;
     private bool _recordingCaptureHotkey;
@@ -74,10 +75,22 @@ public partial class ToolbarWindow : Window
         RefreshHotkeyDisplay();
         RefreshCaptureButtonHint();
 
+        // Restore onto the monitor the toolbar was last on. Left/Top are DIPs that mean different pixels on a
+        // monitor with another scale, so the saved position is in pixels (older settings fall back to Left/Top).
+        SourceInitialized += (_, _) =>
+        {
+            var settings = _session.Settings.Current;
+            if (settings.ToolbarPixelX is { } px && settings.ToolbarPixelY is { } py)
+            {
+                WindowPlacement.MoveToPixels(this, px, py);
+            }
+        };
+
         LocationChanged += (_, _) =>
         {
             SavePosition();
             UpdatePopupPlacement();
+            ReportMonitor();
             BoundsChanged?.Invoke(this, EventArgs.Empty);
         };
 
@@ -90,6 +103,7 @@ public partial class ToolbarWindow : Window
             SizeToContent = SizeToContent.WidthAndHeight;
             UpdateLayout();
             ClampToVisibleScreen();
+            ReportMonitor();
             BoundsChanged?.Invoke(this, EventArgs.Empty);
             var handle = new WindowInteropHelper(this).Handle;
             NativeMethods.SetWindowDisplayAffinity(handle, NativeMethods.WdaExcludeFromCapture);
@@ -177,27 +191,56 @@ public partial class ToolbarWindow : Window
         ClearCaptureHotkeyButton.Opacity = captureBound ? 1 : 0.45;
     }
 
+    /// <summary>
+    /// Keeps the toolbar fully on the monitor it mostly sits on (any monitor, not just the primary), so it can
+    /// never be left parked where it can't be grabbed. Works in pixels, which are comparable across monitors.
+    /// </summary>
     public void ClampToVisibleScreen()
     {
-        var dips = MonitorHelper.GetPrimaryMonitorGeometry().Dips;
-        if (Left + ActualWidth > dips.Right)
+        var rect = WindowPlacement.GetPixelRect(this);
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
         {
-            Left = dips.Right - ActualWidth - 16;
+            return;
         }
 
-        if (Top + ActualHeight > dips.Bottom)
+        var monitor = MonitorHelper.GetMonitorForPixelRect(rect).Pixels;
+        var margin = 16 * WindowPlacement.GetScale(this);
+        var x = rect.X;
+        var y = rect.Y;
+
+        if (x + rect.Width > monitor.Right)
         {
-            Top = dips.Bottom - ActualHeight - 16;
+            x = monitor.Right - rect.Width - margin;
         }
 
-        if (Left < dips.Left)
+        if (y + rect.Height > monitor.Bottom)
         {
-            Left = dips.Left + 16;
+            y = monitor.Bottom - rect.Height - margin;
         }
 
-        if (Top < dips.Top)
+        if (x < monitor.Left)
         {
-            Top = dips.Top + 16;
+            x = monitor.Left + margin;
+        }
+
+        if (y < monitor.Top)
+        {
+            y = monitor.Top + margin;
+        }
+
+        if (Math.Abs(x - rect.X) >= 1 || Math.Abs(y - rect.Y) >= 1)
+        {
+            WindowPlacement.MoveToPixels(this, x, y);
+        }
+    }
+
+    /// <summary>Tells the stream-target resolver which monitor the toolbar is on (used by "follow the toolbar").</summary>
+    private void ReportMonitor()
+    {
+        var rect = WindowPlacement.GetPixelRect(this);
+        if (!rect.IsEmpty)
+        {
+            StreamTargetResolver.NotifyToolbarMoved(rect);
         }
     }
 
@@ -476,6 +519,13 @@ public partial class ToolbarWindow : Window
     {
         _session.Settings.Current.ToolbarLeft = Left;
         _session.Settings.Current.ToolbarTop = Top;
+        var pixels = WindowPlacement.GetPixelRect(this);
+        if (!pixels.IsEmpty)
+        {
+            _session.Settings.Current.ToolbarPixelX = pixels.X;
+            _session.Settings.Current.ToolbarPixelY = pixels.Y;
+        }
+
         _session.PersistSettings();
     }
 
@@ -597,9 +647,18 @@ public partial class ToolbarWindow : Window
         }
         else
         {
-            var dips = MonitorHelper.GetPrimaryMonitorGeometry().Dips;
-            var center = Left + ActualWidth / 2;
-            placement = center > (dips.Left + dips.Right) / 2 ? PlacementMode.Left : PlacementMode.Right;
+            // Open toward the middle of the monitor the bar is on.
+            var rect = WindowPlacement.GetPixelRect(this);
+            if (rect.IsEmpty)
+            {
+                placement = PlacementMode.Right;
+            }
+            else
+            {
+                var monitor = MonitorHelper.GetMonitorForPixelRect(rect).Pixels;
+                var center = rect.X + rect.Width / 2;
+                placement = center > (monitor.Left + monitor.Right) / 2 ? PlacementMode.Left : PlacementMode.Right;
+            }
         }
 
         ToolPopup.Placement = placement;
@@ -622,6 +681,18 @@ public partial class ToolbarWindow : Window
 
         _dragging = true;
         _dragStart = e.GetPosition(this);
+        // Remember where in the window (in pixels) the pointer grabbed it, so the drag follows the pointer
+        // across monitors of different scales without the DIP<->pixel ratio shifting under it.
+        var rect = WindowPlacement.GetPixelRect(this);
+        if (NativeMethods.GetCursorPos(out var cursor) && !rect.IsEmpty)
+        {
+            _dragGrabPixels = new Point(cursor.X - rect.X, cursor.Y - rect.Y);
+        }
+        else
+        {
+            _dragGrabPixels = null;
+        }
+
         ((UIElement)sender).CaptureMouse();
     }
 
@@ -629,6 +700,12 @@ public partial class ToolbarWindow : Window
     {
         if (!_dragging || e.LeftButton != MouseButtonState.Pressed)
         {
+            return;
+        }
+
+        if (_dragGrabPixels is { } grab && NativeMethods.GetCursorPos(out var cursor))
+        {
+            WindowPlacement.MoveToPixels(this, cursor.X - grab.X, cursor.Y - grab.Y);
             return;
         }
 

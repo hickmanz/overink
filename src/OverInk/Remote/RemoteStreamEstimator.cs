@@ -20,19 +20,18 @@ public sealed record RemoteStreamEstimate(
 
 public static class RemoteStreamEstimator
 {
-    public static int GetPrimaryMonitorLongEdgePx()
+    /// <summary>Long edge in pixels of what is streamed at native size: the target monitor, the whole desktop, or the region.</summary>
+    public static int GetNativeLongEdgePx(AppSettings settings)
     {
-        var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-        return Math.Max(
-            Math.Max(1, (int)geometry.Pixels.Width),
-            Math.Max(1, (int)geometry.Pixels.Height));
+        var rect = StreamTargetResolver.GetStreamPixels(settings);
+        return Math.Max(1, (int)Math.Max(rect.Width, rect.Height));
     }
 
     public static int GetEffectiveMaxEdge(AppSettings settings)
     {
         if (settings.RemoteMaxEdge <= 0)
         {
-            return GetPrimaryMonitorLongEdgePx();
+            return GetNativeLongEdgePx(settings);
         }
 
         return Math.Clamp(settings.RemoteMaxEdge, 320, 7680);
@@ -40,19 +39,21 @@ public static class RemoteStreamEstimator
 
     public static RemoteStreamEstimate Estimate(AppSettings settings)
     {
-        var geometry = MonitorHelper.GetPrimaryMonitorGeometry();
-        var pw = Math.Max(1, (int)geometry.Pixels.Width);
-        var ph = Math.Max(1, (int)geometry.Pixels.Height);
-        var dw = Math.Max(1, (int)geometry.Dips.Width);
-        var dh = Math.Max(1, (int)geometry.Dips.Height);
+        var rect = StreamTargetResolver.GetStreamPixels(settings);
+        var monitor = MonitorHelper.GetMonitorForPixelRect(rect);
+        var pw = Math.Max(1, (int)rect.Width);
+        var ph = Math.Max(1, (int)rect.Height);
+        // Scale of the monitor holding most of the streamed area (with several monitors the DPI can differ).
+        var dipScale = monitor.ScaleX > 0 ? monitor.ScaleX : 1;
+        var dw = Math.Max(1, (int)Math.Round(pw / dipScale));
+        var dh = Math.Max(1, (int)Math.Round(ph / dipScale));
         var longEdge = Math.Max(pw, ph);
         var maxEdge = GetEffectiveMaxEdge(settings);
         var scale = Math.Min(1.0, maxEdge / (double)longEdge);
         var streamW = Math.Max(1, (int)(pw * scale));
         var streamH = Math.Max(1, (int)(ph * scale));
         var streamLong = Math.Max(streamW, streamH);
-        var dipScale = pw / (double)dw;
-        var label = ClassifyMonitor(pw, ph);
+        var label = DescribeTarget(settings, pw, ph);
         var downscale = streamLong / (double)longEdge;
         var guidance = BuildGuidance(downscale, streamLong, longEdge, settings);
         var kbps = EstimateKbps(streamW, streamH, settings.RemoteMaxFps, settings.RemoteJpegQuality);
@@ -77,6 +78,21 @@ public static class RemoteStreamEstimator
         (Math.Min(7680, monitorLongEdge), 10, 95);
 
     public static (int MaxEdge, int Fps, int Quality) PresetEco() => (1280, 6, 65);
+
+    private static string DescribeTarget(AppSettings settings, int w, int h)
+    {
+        if (settings.RemoteRegionEnabled)
+        {
+            return "Capture region";
+        }
+
+        return settings.StreamTarget switch
+        {
+            StreamTarget.AllMonitors => "All monitors",
+            StreamTarget.SpecificMonitor => ClassifyMonitor(w, h),
+            _ => ClassifyMonitor(w, h) + " (follows toolbar)"
+        };
+    }
 
     private static string ClassifyMonitor(int w, int h)
     {
