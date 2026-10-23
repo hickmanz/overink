@@ -20,29 +20,46 @@ final class AnnotationSession {
     var canRedo: Bool { history.canRedo }
 
     var colorHex = "#E53935" {
-        didSet { settingsChanged?() }
+        didSet { notifySettings() }
     }
     var penWidth = 4.0 {
         didSet {
             penWidth = min(max(penWidth, 1), 24)
-            settingsChanged?()
+            notifySettings()
         }
     }
     var tool = SketchTool.pen {
-        didSet { settingsChanged?() }
+        didSet { notifySettings() }
     }
     var pressureSensitive = true {
-        didSet { settingsChanged?() }
+        didSet { notifySettings() }
     }
     var veilOpacity = 0.0 {
         didSet {
             veilOpacity = min(max(veilOpacity, 0), 0.6)
             changed?()
-            settingsChanged?()
+            notifySettings()
         }
     }
+    /// Hit radius of the whole-stroke eraser, in points.
+    var eraserRadius: Double { max(8, penWidth * 2) }
+
+    /// Diameter of the on-screen cursor ring for the active tool.
+    var cursorDiameter: Double {
+        tool == .eraser ? eraserRadius * 2 : max(penWidth, 6)
+    }
+
     var changed: (() -> Void)?
-    var settingsChanged: (() -> Void)?
+    private var settingsObservers: [() -> Void] = []
+
+    /// Called whenever tool, color, width, pressure, or veil change.
+    func observeSettings(_ observer: @escaping () -> Void) {
+        settingsObservers.append(observer)
+    }
+
+    private func notifySettings() {
+        settingsObservers.forEach { $0() }
+    }
 
     func strokes(for displayID: CGDirectDisplayID) -> [InkStroke] {
         history.items.lazy

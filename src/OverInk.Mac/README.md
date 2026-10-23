@@ -10,6 +10,8 @@ Native Swift/AppKit implementation of OverInk.
 - Shared multi-display annotation history with pressure-aware Core Graphics rendering
 - Native `NSGlassEffectView` Liquid Glass toolbar on macOS 26+, with Lucide icons and compact menus
 - Pen, line, arrow, rectangle, ellipse, whole-stroke eraser, pressure, color, width, and screen veil
+- Draw-mode shortcuts (P/E/L/A/R/O, Command-Z, Shift-Command-Z, Escape), right-click tool menu, Shift to constrain shapes, freehand smoothing, and a pen-size cursor
+- Toolbar: draggable grip (double-click flips vertical/horizontal), compact or expanded tools, color swatches with saved custom colors and a color wheel, width and veil sliders, off-screen recovery, and optional auto-hide
 - Global draw toggle (default `Control-Shift-D`, matching Windows) registered with Carbon hotkeys, so no Accessibility permission is needed
 - Screen Recording permission entry point
 - ScreenCaptureKit clean-background capture with offscreen ink/veil composition

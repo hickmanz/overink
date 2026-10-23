@@ -30,6 +30,12 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
 
     public var drawHotkey = KeyChord.defaultDrawToggle
 
+    public var toolbarVertical = false
+    /// Compact: one tool button with a flyout plus the eraser. Expanded: a button per tool.
+    public var compactTools = true
+    public var customColors: [String] = []
+    public var hideToolbarWhenNotDrawing = false
+
     public init() {}
 
     public var captureBehavior: MacCaptureBehavior {
@@ -52,6 +58,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         case copyAfterCapture, exitDrawModeAfterCapture, clearAfterCapture
         case toolbarX, toolbarY
         case drawHotkey
+        case toolbarVertical, compactTools, customColors, hideToolbarWhenNotDrawing
     }
 
     public init(from decoder: Decoder) throws {
@@ -69,6 +76,13 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         toolbarX = try c.decodeIfPresent(Double.self, forKey: .toolbarX)
         toolbarY = try c.decodeIfPresent(Double.self, forKey: .toolbarY)
         drawHotkey = (try? c.decodeIfPresent(KeyChord.self, forKey: .drawHotkey)) ?? d.drawHotkey
+        toolbarVertical = try c.decodeIfPresent(Bool.self, forKey: .toolbarVertical) ?? d.toolbarVertical
+        compactTools = try c.decodeIfPresent(Bool.self, forKey: .compactTools) ?? d.compactTools
+        customColors = CustomColorPalette(
+            normalizing: try c.decodeIfPresent([String].self, forKey: .customColors) ?? []
+        ).colors
+        hideToolbarWhenNotDrawing = try c.decodeIfPresent(Bool.self, forKey: .hideToolbarWhenNotDrawing)
+            ?? d.hideToolbarWhenNotDrawing
     }
 }
 

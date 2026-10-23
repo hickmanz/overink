@@ -13,10 +13,19 @@ final class OverlayController {
     let session = AnnotationSession()
     private(set) var mode: InteractionMode = .passThrough
     var modeDidChange: ((InteractionMode) -> Void)?
+    private lazy var drawShortcuts = DrawShortcuts(
+        selectTool: { [weak self] tool in self?.session.tool = tool },
+        undo: { [weak self] in self?.undo() },
+        redo: { [weak self] in self?.redo() },
+        exitDrawing: { [weak self] in self?.setMode(.passThrough) }
+    )
 
     init() {
         session.changed = { [weak self] in
             self?.windows.forEach { $0.refreshInk() }
+        }
+        session.observeSettings { [weak self] in
+            self?.windows.forEach { $0.refreshCursor() }
         }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -42,6 +51,7 @@ final class OverlayController {
         for window in windows {
             window.isDrawingEnabled = newMode == .draw
         }
+        drawShortcuts.setEnabled(newMode == .draw)
         modeDidChange?(newMode)
     }
 
@@ -57,6 +67,76 @@ final class OverlayController {
         session.redo()
     }
 
+    func shutdown() {
+        drawShortcuts.shutdown()
+    }
+
+    private func showContextMenu(for event: NSEvent, in view: NSView) {
+        let menu = NSMenu()
+        for entry in DrawShortcutMap.entries {
+            let item = NSMenuItem(
+                title: Self.title(for: entry.tool),
+                action: #selector(ContextMenuTarget.selectTool(_:)),
+                keyEquivalent: entry.letter.lowercased()
+            )
+            item.keyEquivalentModifierMask = []
+            item.representedObject = entry.tool.rawValue
+            item.state = session.tool == entry.tool ? .on : .off
+            item.image = Self.icon(for: entry.tool).image(size: 16, label: Self.title(for: entry.tool))
+            item.target = contextTarget
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let clear = NSMenuItem(
+            title: "Clear all",
+            action: #selector(ContextMenuTarget.clearAll),
+            keyEquivalent: ""
+        )
+        clear.target = contextTarget
+        menu.addItem(clear)
+        let exit = NSMenuItem(
+            title: "Exit draw mode",
+            action: #selector(ContextMenuTarget.exitDrawing),
+            keyEquivalent: "\u{1b}"
+        )
+        exit.keyEquivalentModifierMask = []
+        exit.target = contextTarget
+        menu.addItem(exit)
+
+        // Escape and the tool letters belong to the menu while it is open.
+        drawShortcuts.setEnabled(false)
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+        drawShortcuts.setEnabled(mode == .draw)
+    }
+
+    private lazy var contextTarget = ContextMenuTarget(
+        selectTool: { [weak self] tool in self?.session.tool = tool },
+        clearAll: { [weak self] in self?.clear() },
+        exitDrawing: { [weak self] in self?.setMode(.passThrough) }
+    )
+
+    static func title(for tool: SketchTool) -> String {
+        switch tool {
+        case .pen: "Pen"
+        case .eraser: "Eraser"
+        case .line: "Line"
+        case .arrow: "Arrow"
+        case .rectangle: "Rectangle"
+        case .ellipse: "Ellipse"
+        }
+    }
+
+    static func icon(for tool: SketchTool) -> LucideIcon {
+        switch tool {
+        case .pen: .pencil
+        case .eraser: .eraser
+        case .line: .line
+        case .arrow: .arrow
+        case .rectangle: .rectangle
+        case .ellipse: .ellipse
+        }
+    }
+
     var windowIDs: Set<CGWindowID> {
         Set(windows.map { CGWindowID($0.windowNumber) })
     }
@@ -65,7 +145,14 @@ final class OverlayController {
         windows.forEach { $0.close() }
         windows = NSScreen.screens.compactMap { screen in
             guard let displayID = screen.overInkDisplayID else { return nil }
-            let window = OverlayWindow(screen: screen, displayID: displayID, session: session)
+            let window = OverlayWindow(
+                screen: screen,
+                displayID: displayID,
+                session: session,
+                onContextMenu: { [weak self] event, view in
+                    self?.showContextMenu(for: event, in: view)
+                }
+            )
             window.isDrawingEnabled = mode == .draw
             window.orderFrontRegardless()
             return window
@@ -84,8 +171,14 @@ final class OverlayWindow: NSPanel {
         }
     }
 
-    init(screen: NSScreen, displayID: CGDirectDisplayID, session: AnnotationSession) {
+    init(
+        screen: NSScreen,
+        displayID: CGDirectDisplayID,
+        session: AnnotationSession,
+        onContextMenu: @escaping (NSEvent, NSView) -> Void
+    ) {
         canvas = InkCanvasView(displayID: displayID, session: session)
+        canvas.onContextMenu = onContextMenu
         super.init(
             contentRect: screen.frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -111,11 +204,46 @@ final class OverlayWindow: NSPanel {
     func refreshInk() {
         canvas.needsDisplay = true
     }
+
+    func refreshCursor() {
+        canvas.refreshCursor()
+    }
+}
+
+/// Objective-C target for the overlay's right-click menu items.
+@MainActor
+final class ContextMenuTarget: NSObject {
+    private let selectToolAction: (SketchTool) -> Void
+    private let clearAllAction: () -> Void
+    private let exitDrawingAction: () -> Void
+
+    init(
+        selectTool: @escaping (SketchTool) -> Void,
+        clearAll: @escaping () -> Void,
+        exitDrawing: @escaping () -> Void
+    ) {
+        selectToolAction = selectTool
+        clearAllAction = clearAll
+        exitDrawingAction = exitDrawing
+    }
+
+    @objc func selectTool(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let tool = SketchTool(rawValue: raw) else {
+            return
+        }
+        selectToolAction(tool)
+    }
+
+    @objc func clearAll() { clearAllAction() }
+    @objc func exitDrawing() { exitDrawingAction() }
 }
 
 @MainActor
 final class InkCanvasView: NSView {
-    var isDrawingEnabled = false
+    var isDrawingEnabled = false {
+        didSet { refreshCursor() }
+    }
+    var onContextMenu: ((NSEvent, NSView) -> Void)?
     private let displayID: CGDirectDisplayID
     private let session: AnnotationSession
     private var activeStroke: InkStroke?
@@ -147,12 +275,61 @@ final class InkCanvasView: NSView {
         true
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(
+            NSTrackingArea(
+                rect: bounds,
+                options: [.activeAlways, .cursorUpdate, .mouseMoved, .inVisibleRect],
+                owner: self
+            )
+        )
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        applyCursor()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        applyCursor()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard isDrawingEnabled else { return }
+        onContextMenu?(event, self)
+    }
+
+    func refreshCursor() {
+        window?.invalidateCursorRects(for: self)
+        guard let window else { return }
+        let mouse = window.mouseLocationOutsideOfEventStream
+        if bounds.contains(convert(mouse, from: nil)) {
+            applyCursor()
+        }
+    }
+
+    private func applyCursor() {
+        if isDrawingEnabled {
+            PenCursor.cursor(diameter: session.cursorDiameter).set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if isDrawingEnabled {
+            addCursorRect(bounds, cursor: PenCursor.cursor(diameter: session.cursorDiameter))
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard isDrawingEnabled else { return }
         let inkPoint = inkPoint(for: event)
         activeTool = session.tool
         if activeTool == .eraser {
-            session.erase(on: displayID, near: inkPoint, radius: max(8, session.penWidth * 2))
+            session.erase(on: displayID, near: inkPoint, radius: session.eraserRadius)
             return
         }
 
@@ -170,7 +347,7 @@ final class InkCanvasView: NSView {
         guard isDrawingEnabled else { return }
         let current = inkPoint(for: event)
         if activeTool == .eraser {
-            session.erase(on: displayID, near: current, radius: max(8, session.penWidth * 2))
+            session.erase(on: displayID, near: current, radius: session.eraserRadius)
             return
         }
         guard activeStroke != nil, let activeStart else { return }

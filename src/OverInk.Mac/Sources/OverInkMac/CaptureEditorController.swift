@@ -452,15 +452,3 @@ enum CaptureEditorError: LocalizedError {
         }
     }
 }
-
-private extension NSColor {
-    var hexRGB: String {
-        let converted = usingColorSpace(.sRGB) ?? self
-        return String(
-            format: "#%02X%02X%02X",
-            Int(round(converted.redComponent * 255)),
-            Int(round(converted.greenComponent * 255)),
-            Int(round(converted.blueComponent * 255))
-        )
-    }
-}

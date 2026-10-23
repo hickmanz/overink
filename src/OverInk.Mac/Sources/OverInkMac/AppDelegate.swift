@@ -7,8 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let captureService = ScreenCaptureService()
     private let libraryController = CaptureLibraryController()
     private let regionPicker = RegionPickerController()
-    private let settingsStore = MacSettingsStore()
-    private var settings = MacAppSettings()
+    private let settings = SettingsModel()
     private lazy var captureCoordinator = CaptureCoordinator(
         screenCapture: captureService,
         annotationSession: overlayController.session,
@@ -21,13 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return ids
         }
     )
-    private lazy var escapeHotKey = HotKeyBinding(
-        chord: KeyChord(keyCode: KeyCodes.escape),
-        enabled: false,
-        allowsBareKey: true
-    ) { [weak self] in
-        self?.overlayController.setMode(.passThrough)
-    }
     private var drawToggleHotKey: HotKeyBinding?
     private var toolbarController: ToolbarController?
     private var statusItem: NSStatusItem?
@@ -35,69 +27,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var showedScreenPermissionHelp = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        settings = settingsStore.load()
         applySettings()
-        overlayController.session.settingsChanged = { [weak self] in
+        overlayController.session.observeSettings { [weak self] in
             self?.persistDrawingSettings()
         }
         configureStatusItem()
-        drawToggleHotKey = HotKeyBinding(chord: settings.drawHotkey) { [weak self] in
-            self?.overlayController.toggleMode()
+        drawToggleHotKey = HotKeyBinding(chord: settings.value.drawHotkey) { [weak self] in
+            self?.handleDrawHotKey()
         }
         toolbarController = ToolbarController(
             overlayController: overlayController,
+            settings: settings,
             onCapture: { [weak self] in self?.capture() },
             onCaptureRegion: { [weak self] in self?.beginRegionCapture() },
-            onOpenLibrary: { [weak self] in self?.openLibrary() },
-            captureBehavior: { [weak self] in
-                self?.settings.captureBehavior ?? MacAppSettings().captureBehavior
-            },
-            onCaptureBehaviorChanged: { [weak self] behavior in
-                guard let self else { return }
-                self.settings.captureBehavior = behavior
-                self.settingsStore.save(self.settings)
-            },
-            onMove: { [weak self] origin in
-                guard let self else { return }
-                self.settings.toolbarX = origin.x
-                self.settings.toolbarY = origin.y
-                self.settingsStore.save(self.settings)
-            }
+            onOpenLibrary: { [weak self] in self?.openLibrary() }
         )
-        if let x = settings.toolbarX, let y = settings.toolbarY {
-            toolbarController?.setStoredOrigin(NSPoint(x: x, y: y))
-        }
         overlayController.modeDidChange = { [weak self] mode in
-            self?.refreshModeMenuItem(mode)
-            self?.toolbarController?.updateMode(mode)
-            self?.escapeHotKey.setEnabled(mode == .draw)
+            guard let self else { return }
+            self.refreshModeMenuItem(mode)
+            self.toolbarController?.updateMode(mode)
+            self.syncToolbarVisibility(for: mode)
         }
         overlayController.show()
-        toolbarController?.show()
+        if !(settings.value.hideToolbarWhenNotDrawing) {
+            toolbarController?.show()
+        }
+        var lastAutoHide = settings.value.hideToolbarWhenNotDrawing
+        settings.observe { [weak self] in
+            // Only react to the auto-hide option itself, not to every toolbar drag.
+            guard let self, self.settings.value.hideToolbarWhenNotDrawing != lastAutoHide else { return }
+            lastAutoHide = self.settings.value.hideToolbarWhenNotDrawing
+            if lastAutoHide {
+                self.syncToolbarVisibility(for: self.overlayController.mode)
+            } else {
+                self.toolbarController?.show()
+            }
+        }
         refreshModeMenuItem(overlayController.mode)
+    }
+
+    /// The draw hotkey brings back a hidden toolbar and starts drawing; otherwise it toggles drawing.
+    private func handleDrawHotKey() {
+        if toolbarController?.isVisible == false, overlayController.mode == .passThrough {
+            toolbarController?.show()
+            overlayController.setMode(.draw)
+        } else {
+            overlayController.toggleMode()
+        }
+    }
+
+    /// With "hide toolbar when not drawing" the toolbar follows the draw/pass-through mode.
+    private func syncToolbarVisibility(for mode: OverlayController.InteractionMode) {
+        guard settings.value.hideToolbarWhenNotDrawing else { return }
+        switch mode {
+        case .draw: toolbarController?.show()
+        case .passThrough: toolbarController?.hide()
+        }
     }
 
     private func applySettings() {
         let session = overlayController.session
-        session.colorHex = settings.penColor
-        session.penWidth = settings.penWidth
-        session.pressureSensitive = settings.pressureSensitive
-        session.veilOpacity = settings.veilOpacity
-        session.tool = settings.tool
+        let value = settings.value
+        session.colorHex = value.penColor
+        session.penWidth = value.penWidth
+        session.pressureSensitive = value.pressureSensitive
+        session.veilOpacity = value.veilOpacity
+        session.tool = value.tool
     }
 
     private func persistDrawingSettings() {
         let session = overlayController.session
-        settings.penColor = session.colorHex
-        settings.penWidth = session.penWidth
-        settings.pressureSensitive = session.pressureSensitive
-        settings.veilOpacity = session.veilOpacity
-        settings.tool = session.tool
-        settingsStore.save(settings)
+        settings.update {
+            $0.penColor = session.colorHex
+            $0.penWidth = session.penWidth
+            $0.pressureSensitive = session.pressureSensitive
+            $0.veilOpacity = session.veilOpacity
+            $0.tool = session.tool
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        escapeHotKey.shutdown()
+        overlayController.shutdown()
         drawToggleHotKey?.shutdown()
     }
 
@@ -193,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var drawShortcutLabel: String {
-        settings.drawHotkey.displayString
+        settings.value.drawHotkey.displayString
     }
 
     private func refreshModeMenuItem(_ mode: OverlayController.InteractionMode) {
@@ -268,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 let destination = try await captureCoordinator.captureDisplay(
                     screen,
-                    copyToClipboard: settings.copyAfterCapture
+                    copyToClipboard: settings.value.copyAfterCapture
                 )
                 finishCapture(destination, wasDrawing: wasDrawing)
             } catch {
@@ -295,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let destination = try await captureCoordinator.captureRegion(
                         screen: selection.screen,
                         rect: selection.rect,
-                        copyToClipboard: settings.copyAfterCapture
+                        copyToClipboard: settings.value.copyAfterCapture
                     )
                     finishCapture(destination, wasDrawing: wasDrawing)
                 } catch {
@@ -307,13 +317,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishCapture(_ destination: URL, wasDrawing: Bool) {
         libraryController.reload()
-        if settings.clearAfterCapture {
+        if settings.value.clearAfterCapture {
             overlayController.clear()
         }
-        if wasDrawing && !settings.exitDrawModeAfterCapture {
+        if wasDrawing && !settings.value.exitDrawModeAfterCapture {
             overlayController.setMode(.draw)
         }
-        statusItem?.button?.toolTip = settings.copyAfterCapture
+        statusItem?.button?.toolTip = settings.value.copyAfterCapture
             ? "Saved \(destination.lastPathComponent) and copied it"
             : "Saved \(destination.lastPathComponent)"
         NSSound(named: "Glass")?.play()

@@ -64,3 +64,60 @@ import Testing
         #expect(KeyChord(keyCode: 122).isValidGlobalHotKey) // F1 needs no modifier
     }
 }
+
+@Suite struct ColorPaletteTests {
+    @Test func hexNormalization() {
+        #expect(ColorHex.normalize("#abc") == "#AABBCC")
+        #expect(ColorHex.normalize("e53935") == "#E53935")
+        #expect(ColorHex.normalize(" #00ff00 ") == "#00FF00")
+        #expect(ColorHex.normalize("#12345") == nil)
+        #expect(ColorHex.normalize("#GGGGGG") == nil)
+    }
+
+    @Test func presetsHaveFourteenSwatches() {
+        #expect(PresetPalette.hexColors.count == 14)
+        #expect(PresetPalette.isPreset("#e53935"))
+        #expect(!PresetPalette.isPreset("#123456"))
+    }
+
+    @Test func addRejectsPresetsDuplicatesAndInvalid() {
+        var palette = CustomColorPalette()
+        let preset = palette.add("#E53935")
+        let fresh = palette.add("#123456")
+        let duplicate = palette.add("#123456")
+        let invalid = palette.add("nope")
+        #expect(!preset)
+        #expect(fresh)
+        #expect(!duplicate)
+        #expect(!invalid)
+        #expect(palette.colors == ["#123456"])
+    }
+
+    @Test func paletteIsCapped() {
+        var palette = CustomColorPalette()
+        for value in 0 ..< 40 {
+            palette.add(String(format: "#%06X", 0x100000 + value))
+        }
+        #expect(palette.colors.count == CustomColorPalette.maxColors)
+    }
+
+    @Test func removeIsCaseInsensitive() {
+        var palette = CustomColorPalette(normalizing: ["#abcdef"])
+        let removed = palette.remove("#ABCDEF")
+        #expect(removed)
+        #expect(palette.colors.isEmpty)
+    }
+
+    @Test func normalizingDropsJunkWhenLoadingSettings() throws {
+        let json = ##"{"customColors":["#123456","#123456","nothex","#E53935","#654321"]}"##
+        let decoded = try JSONDecoder().decode(MacAppSettings.self, from: Data(json.utf8))
+        #expect(decoded.customColors == ["#123456", "#654321"])
+    }
+
+    @Test func newToolbarSettingsDefaultForOldFiles() throws {
+        let decoded = try JSONDecoder().decode(MacAppSettings.self, from: Data("{}".utf8))
+        #expect(decoded.compactTools)
+        #expect(!decoded.toolbarVertical)
+        #expect(!decoded.hideToolbarWhenNotDrawing)
+    }
+}

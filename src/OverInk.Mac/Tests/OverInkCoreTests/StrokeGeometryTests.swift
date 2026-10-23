@@ -110,3 +110,18 @@ import Testing
         #expect(box == PixelRect(x: 8, y: 8, width: 24, height: 14))
     }
 }
+
+@Suite struct DrawShortcutMapTests {
+    @Test func everyToolHasAUniqueLetter() {
+        let letters = DrawShortcutMap.entries.map(\.letter)
+        #expect(Set(letters).count == letters.count)
+        #expect(Set(DrawShortcutMap.entries.map(\.tool)) == Set(SketchTool.allCases))
+    }
+
+    @Test func lookupsRoundTrip() {
+        #expect(DrawShortcutMap.tool(forKeyCode: KeyCodes.p) == .pen)
+        #expect(DrawShortcutMap.tool(forLetter: "o") == .ellipse)
+        #expect(DrawShortcutMap.letter(for: .eraser) == "E")
+        #expect(DrawShortcutMap.tool(forKeyCode: KeyCodes.z) == nil)
+    }
+}
