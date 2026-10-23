@@ -18,19 +18,23 @@ public struct InkStroke: Codable, Equatable, Identifiable, Sendable {
     public var width: Double
     public var points: [InkPoint]
     public var ignoresPressure: Bool
+    /// Strokes sharing a group id are selected and moved together.
+    public var groupId: UUID?
 
     public init(
         id: UUID = UUID(),
         colorHex: String,
         width: Double,
         points: [InkPoint] = [],
-        ignoresPressure: Bool = false
+        ignoresPressure: Bool = false,
+        groupId: UUID? = nil
     ) {
         self.id = id
         self.colorHex = colorHex
         self.width = width
         self.points = points
         self.ignoresPressure = ignoresPressure
+        self.groupId = groupId
     }
 }
 
@@ -56,7 +60,8 @@ public struct InkDocument: Codable, Equatable, Sendable {
 }
 
 public struct CaptureDocument: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
+    /// 2 added stroke `groupId`. Version 1 documents load unchanged.
+    public static let currentVersion = 2
 
     public var version: Int
     public var canvasWidth: Double
@@ -76,6 +81,11 @@ public struct CaptureDocument: Codable, Equatable, Sendable {
         self.canvasHeight = canvasHeight
         self.veilOpacity = min(max(veilOpacity, 0), 0.6)
         self.strokes = strokes
+    }
+
+    /// Stamps the document with the current format version (call before saving a loaded document).
+    public mutating func upgradeToCurrentVersion() {
+        version = Self.currentVersion
     }
 }
 

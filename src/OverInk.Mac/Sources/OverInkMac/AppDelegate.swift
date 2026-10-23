@@ -5,12 +5,15 @@ import OverInkCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlayController = OverlayController()
     private let captureService = ScreenCaptureService()
-    private let libraryController = CaptureLibraryController()
+    private lazy var editorController = EditorWindowController(settings: settings)
     private let regionPicker = RegionPickerController()
     private let settings = SettingsModel()
     private lazy var captureCoordinator = CaptureCoordinator(
         screenCapture: captureService,
         annotationSession: overlayController.session,
+        libraryFolder: { [weak self] in
+            CaptureLibrary.folder(forSetting: self?.settings.value.libraryFolder)
+        },
         excludedWindowIDs: { [weak self] in
             guard let self else { return [] }
             var ids = self.overlayController.windowIDs
@@ -28,6 +31,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var modeMenuItem: NSMenuItem?
     private var showedScreenPermissionHelp = false
+
+    /// Launch arguments for development: `--library` or `--open-editor <path to a capture PNG>`.
+    private func handleLaunchArguments() {
+        let arguments = CommandLine.arguments
+        if arguments.contains("--library") {
+            editorController.showLibrary()
+        }
+        if let index = arguments.firstIndex(of: "--open-editor"), arguments.indices.contains(index + 1) {
+            editorController.open(URL(fileURLWithPath: arguments[index + 1]))
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applySettings()
@@ -84,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         refreshModeMenuItem(overlayController.mode)
+        handleLaunchArguments()
     }
 
     /// The draw hotkey brings back a hidden toolbar and starts drawing; otherwise it toggles drawing.
@@ -127,9 +142,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        editorController.flush()
         overlayController.shutdown()
         drawToggleHotKey?.shutdown()
         captureHotKey?.shutdown()
+    }
+
+    @objc private func chooseLibraryFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Folder"
+        panel.message = "Choose where OverInk saves and lists captures."
+        panel.directoryURL = CaptureLibrary.folder(forSetting: settings.value.libraryFolder)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let isDefault = url.standardizedFileURL == CaptureLibrary.defaultFolder().standardizedFileURL
+        settings.update { $0.libraryFolder = isDefault ? nil : url.path }
     }
 
     private func configureStatusItem() {
@@ -156,6 +187,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         libraryItem.target = self
         menu.addItem(libraryItem)
+
+        let folderItem = NSMenuItem(
+            title: "Library folder…",
+            action: #selector(chooseLibraryFolder),
+            keyEquivalent: ""
+        )
+        folderItem.target = self
+        menu.addItem(folderItem)
 
         let modeItem = NSMenuItem(
             title: "",
@@ -359,9 +398,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishCapture(_ destination: URL, wasDrawing: Bool) {
-        libraryController.reload()
+        editorController.reload()
         if settings.value.openEditorAfterCapture {
-            libraryController.openEditor(for: destination)
+            editorController.open(destination)
         }
         if settings.value.clearAfterCapture {
             overlayController.clear()
@@ -396,7 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openLibrary() {
         overlayController.setMode(.passThrough)
-        libraryController.show()
+        editorController.showLibrary()
     }
 
     private func showScreenRecordingPermissionAlert() {

@@ -16,12 +16,15 @@ final class CaptureCoordinator {
     private let screenCapture: ScreenCaptureService
     private let annotationSession: AnnotationSession
     private let excludedWindowIDs: () -> Set<CGWindowID>
+    private let libraryFolder: () -> URL
 
     init(
         screenCapture: ScreenCaptureService,
         annotationSession: AnnotationSession,
+        libraryFolder: @escaping () -> URL,
         excludedWindowIDs: @escaping () -> Set<CGWindowID>
     ) {
+        self.libraryFolder = libraryFolder
         self.screenCapture = screenCapture
         self.annotationSession = annotationSession
         self.excludedWindowIDs = excludedWindowIDs
@@ -120,42 +123,13 @@ final class CaptureCoordinator {
     }
 
     private func captureDestination() throws -> URL {
-        guard let pictures = FileManager.default.urls(
-            for: .picturesDirectory,
-            in: .userDomainMask
-        ).first else {
-            throw CaptureSaveError.picturesFolderUnavailable
-        }
-
-        let folder = pictures.appendingPathComponent("OverInk", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: folder,
-            withIntermediateDirectories: true
-        )
+        let library = CaptureLibrary(folder: libraryFolder())
+        try library.ensureFolder()
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let filename = "OverInk-\(formatter.string(from: Date())).png"
-        return uniqueURL(folder.appendingPathComponent(filename))
-    }
-
-    private func uniqueURL(_ proposed: URL) -> URL {
-        guard FileManager.default.fileExists(atPath: proposed.path) else {
-            return proposed
-        }
-
-        let stem = proposed.deletingPathExtension().lastPathComponent
-        let folder = proposed.deletingLastPathComponent()
-        for suffix in 2 ... 999 {
-            let candidate = folder
-                .appendingPathComponent("\(stem)-\(suffix)")
-                .appendingPathExtension("png")
-            if !FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-        }
-        return proposed
+        return library.uniqueURL(base: "OverInk-\(formatter.string(from: Date()))")
     }
 }
 

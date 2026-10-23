@@ -16,12 +16,23 @@ Native Swift/AppKit implementation of OverInk.
 - Screen Recording permission entry point
 - ScreenCaptureKit clean-background capture with offscreen ink/veil composition
 - Capture package with flattened PNG, `.orig.png`, and versioned editable `.overink.json`
-- Native capture library with thumbnail grid, open, copy, reveal, and delete actions
-- Native editor with pen, eraser, undo/redo, color, width, veil, save, and copy
+- Editor and library in one window:
+  - Tools: pen, eraser, line, arrow, rectangle, ellipse (Shift constrains), and a Select tool (`V`) with marquee, Shift-click, move, resize handles, recolor, delete, arrow-key nudge, and grouped strokes
+  - Zoom: pinch or Command-scroll, `⌘0` fit, `⌘1` actual size, `⌘+`/`⌘-`, brush-size cursor that follows zoom
+  - `⌘S` save, `⇧⌘S` save a copy as PNG, `⌘C` copy; edits also autosave in the background when the window loses focus, closes, or the app quits, and an unchanged original is never re-encoded
+  - Recent-captures strip under the canvas and a searchable grid (`⌘F`) with rename, duplicate, copy, reveal, trash, drag to reorder (stored in `.overink-order.json`), drag out to other apps, and drop PNGs in to import them
+  - The library folder is watched, so captures added or removed in Finder appear immediately. A plain PNG becomes editable on its first save (its pixels are kept as the `.orig.png`)
+  - Library folder can be changed from the menu-bar menu (default `~/Pictures/OverInk`)
 - Capture modes: display under the cursor or all displays stitched together, drag-to-select regions that can span displays, and window snap (hover a window and click)
 - Optional global capture hotkey (unbound by default), include-toolbar and open-editor-after-capture options, native-resolution Retina captures
 - Persistent drawing, toolbar position, and capture behavior settings
 - Platform-neutral Swift models for geometry, ink, and remote protocol v1
+
+Capture documents are `CaptureDocument` version 2 (adds stroke `groupId`); version 1 files still open. The Mac format is independent of the Windows ISF-based library.
+
+## Development launch arguments
+
+`OverInkMac --library` opens the library window and `OverInkMac --open-editor <capture.png>` opens a capture in the editor on launch.
 
 ## Build and test
 

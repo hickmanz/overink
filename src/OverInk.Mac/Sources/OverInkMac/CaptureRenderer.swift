@@ -2,20 +2,6 @@ import AppKit
 import CoreGraphics
 import OverInkCore
 
-enum CapturePackagePaths {
-    static func original(for flattened: URL) -> URL {
-        flattened
-            .deletingPathExtension()
-            .appendingPathExtension("orig.png")
-    }
-
-    static func document(for flattened: URL) -> URL {
-        flattened
-            .deletingPathExtension()
-            .appendingPathExtension("overink.json")
-    }
-}
-
 enum CaptureRenderer {
     static func flattened(background: CGImage, document: CaptureDocument) throws -> CGImage {
         let width = background.width

@@ -42,6 +42,9 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
     public var includeToolbarInCaptures = false
     public var openEditorAfterCapture = false
 
+    /// Custom capture library folder. `nil` means `Pictures/OverInk`.
+    public var libraryFolder: String?
+
     public init() {}
 
     public var captureBehavior: MacCaptureBehavior {
@@ -66,6 +69,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         case drawHotkey
         case toolbarVertical, compactTools, customColors, hideToolbarWhenNotDrawing
         case captureMode, captureHotkey, includeToolbarInCaptures, openEditorAfterCapture
+        case libraryFolder
     }
 
     public init(from decoder: Decoder) throws {
@@ -96,6 +100,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
             ?? d.includeToolbarInCaptures
         openEditorAfterCapture = try c.decodeIfPresent(Bool.self, forKey: .openEditorAfterCapture)
             ?? d.openEditorAfterCapture
+        libraryFolder = try c.decodeIfPresent(String.self, forKey: .libraryFolder)
     }
 }
 
