@@ -39,53 +39,36 @@ Work is tracked on the `mac-app` branch, in phases toward feature parity with Wi
 | 2 | Capture: window snap, auto / full-screen modes, regions across displays | Done |
 | 3 | Editor and library: shapes, Select tool, zoom, grid/strip, rename, reorder, autosave | Done |
 | 4 | Settings window, launch at login, onboarding, single instance, `overink://` URLs | Done |
-| 5 | Remote (iPad) sketching | **In progress** |
+| 5 | Remote (iPad) sketching | Done; needs a first test on a real iPad |
 | 6 | Distribution: signing, notarization, DMG, Sparkle updates | Not started |
 
 **Phase 5 (remote): what is done**
 
-- The iPad web client moved from `src/OverInk/Remote/wwwroot` to `shared/remote-web/`, so Windows and Mac serve the same files.
-  - Windows embeds it through `OverInk.csproj` (`LogicalName` keeps the old resource names). **This csproj change has not been built yet**, because there is no .NET SDK on the Mac. Build it on Windows first.
-  - Mac reaches it through the symlink `src/OverInk.Mac/Sources/OverInkMac/RemoteWeb`, declared as a SwiftPM resource.
-- New pure code in `OverInkCore` (compiles; **no tests written yet**):
-  - `RemoteProtocol.swift`: every wire message, client-message decoding, and the 17-byte binary frame encoder/decoder. Stroke ids are lowercase GUID strings, as the web client compares them as strings.
-  - `RemoteNetwork.swift`: private-address check, LAN adapter ranking and choice, and the pairing URL (`http://<ip>:<port>/?join=…&pair=…`).
-  - `RemotePairing.swift`: 10-minute single-use pair tokens, session join token, device keys stored as SHA-256 hashes, participant colors.
-  - `RemoteLibrary.swift`: `/lib` DTOs, conversion between canvas points and image pixels, validation, revisions, and per-connection library tokens.
-  - `RemoteStreaming.swift`: `RemoteSettings` (now `MacAppSettings.remote`), stream target and region resolver, `StreamPlan` (cuts the stream rectangle across displays), presets, estimator, and `RevisionTimeline`.
+- The iPad web client lives in `shared/remote-web/`, so Windows and Mac serve the same files. Windows embeds it through `OverInk.csproj` (`LogicalName` keeps the old resource names); the Mac copies it into `Contents/Resources/RemoteWeb` (the dev script does this) and falls back to the SwiftPM resource for `swift run`.
+- Pure code in `OverInkCore`, all unit-tested: wire protocol and binary frames, HTTP request parser, WebSocket handshake and codec (RFC 6455 vectors), network and adapter ranking, pairing, library conversion, stream planning, remote ink mapping, and partial erase.
+- `OverInkMac`: `RemoteServer` (Network.framework), `RemoteHost` (auth, messages, ink, state, roster), `FrameStreamer` (ScreenCaptureKit and JPEG), `RemoteLibraryService` (`/lib`), `CaptureStorage` (shared with the editor), `RemoteWindowController` (pairing, devices, streaming and access settings), and a Keychain-or-file paired-device store.
+- `shared/protocol/remote-v1.schema.json` covers every message, and `RemoteSchemaConformanceTests` validates what the host sends, what it accepts, and what the shipped `app.js` sends and handles.
+- `scripts/remote-smoke.mjs` exercises the running host over a real WebSocket and HTTP: handshake, strokes, shapes, erase, per-author undo, state, ping, hover, clear, and the whole library API including the 409 conflict. It passes against the dev bundle.
+- Checked in a real browser: the shared web client loads from the Mac, connects and shows the streamed screen.
 
-**Phase 5: next steps, in order**
+**Phase 5: still to verify by hand**
 
-1. **Unit tests** for everything above. Port the cases from `tests/OverInk.Tests` (`StreamTargetResolverTests`, `RemoteNetworkTests`, `RemoteLibraryTests`, `LanAdapterAndFirewallTests`). Add round-trip tests for frame encoding and for decoding each client message.
-2. **Server** (`OverInkMac`): an `NWListener` on the configured port that speaks HTTP and upgrades `/ws` to WebSocket.
-   - Serve `RemoteWeb` with no-store headers, and `/health`.
-   - Reject peers that fail `RemoteNetwork.isAllowedRemote`.
-   - Authenticate the first `hello` in this order: pair token, device key, join token, loopback auto-pair. Honor `maxClients` and the optional join approval.
-   - Keep a per-client send queue: a frame slot of capacity 1 that drops the oldest frame, plus an unbounded control queue.
-3. **`/lib` routes**: list, thumb, original, GET/POST strokes (409 on a stale `baseRev`), duplicate, delete. Guard them with `LibraryTokenRegistry`.
-   - Extract `SaveJob` and `load` from `EditorWindowController` into a shared `CaptureStorage` so remote saves use the same code path.
-   - Send `libraryChanged` and `libraryItemChanged` from `DirectoryWatcher`.
-   - Handle the `capture` message with `CaptureCoordinator.capture(.region(streamRect))`.
-4. **Pairing UI**: a window with a CoreImage QR code, adapter picker (`getifaddrs` plus `SCDynamicStore` for the default route), paired-device list with revoke, and the Local Network permission. Store paired devices in the Keychain behind `PairedDeviceStore`.
-5. **Streaming**: one `SCStream` per display piece of `StreamPlan`, composed at `maxFps`, JPEG-encoded through ImageIO.
-   - Skip unchanged frames with a hash, send a keepalive every 2 seconds, and retry at quality − 20 (minimum 40) when a JPEG is over 1 MB.
-   - Fill gaps between displays with `StreamPlan.gapColorHex`.
-   - Stamp each frame with `RevisionTimeline.revision(forFrameAt:latency:)` (about 50 ms).
-   - Leave the overlay windows in the capture, because the Windows host streams the screen with ink drawn in.
-6. **Remote ink**: a controller that turns normalized coordinates into a display and local point, and drives `AnnotationSession`.
-   - `AnnotationSession` needs author-aware append, undo, redo, remove and replace (`EditHistory` already supports authors).
-   - Add a partial-erase function in Core: points within `size/2 + stroke width/2` of the eraser are removed, and runs of at least 2 points and `0.75 × width` stay as new strokes.
-   - Broadcast `strokesAdded`, `strokesRemoved`, `cleared`, `ack` (with ink revision), `roster`, and the `peer*` messages.
-   - A stroke belongs to the display where it starts; strokes that cross displays are not split.
-7. **Settings UI** for the remote section (enable, port, adapter, target, region, presets, estimator text), then a **schema and conformance pass**: extend `shared/protocol/remote-v1.schema.json` to cover every message and validate samples from both hosts against it.
-8. **Manual test** with the real web client in a browser against `swift run OverInkMac` (loopback auto-pair works), then on an iPad.
+1. **A real iPad.** On the first run macOS shows the firewall prompt ("accept incoming connections") and the Local Network prompt. Until both are answered, connections from other devices hang. Loopback works without them, which is why the smoke test passes regardless.
+2. **The Windows build.** The `OverInk.csproj` change that embeds `shared/remote-web` has not been built, because there is no .NET SDK on the Mac. Build and run the Windows app once, and check that the iPad page still loads.
+3. **Multiple displays.** Streaming across several displays (the piece placement, `sourceRect` and the gap color) has only been exercised on one display.
+4. **Region and "follow the toolbar"** while the toolbar is dragged to another display.
+5. **Keychain.** Paired devices use the Keychain only when the app is signed with a Team ID, which a development build is not (they use `paired-devices.json` instead). Check this on a signed build in phase 6.
+
+Known gaps: ink that crosses displays is stored on the display where the stroke starts (not split); a remote save to a capture that is open in the Mac editor is picked up only when the editor reloads it.
 
 **Phase 6 (distribution)**: Developer ID signing and notarization, a DMG, a macOS job in `.github/workflows/release.yml`, and Sparkle 2 with a beta channel, a "Not now" limit of 3 and a "Check now" button. This needs full Xcode and signing credentials.
 
 Notes for whoever continues:
 
 - Mac stream defaults are 10 fps, JPEG quality 80, long edge 2560. Windows uses native size at quality 95, which is too heavy for Retina displays.
-- `swift test` can fail once with a compiler crash after large edits. Re-run it; it passes on retry.
+- `swift test` can fail once with a compiler crash after large edits, or with "plugin for module 'TestingMacros' not found". Re-run it; it passes on retry.
+- Never read Keychain items from the main thread in an unsigned build: every rebuild changes the app's identity and macOS stops the app with a password prompt. `KeychainPairedDeviceStore` only uses the Keychain for Team-signed builds.
+- ScreenCaptureKit reports no displays while the display is asleep or the Mac is locked, so streaming and capture cannot be tested then (`caffeinate -u -t 10` wakes the display).
 
 ## Releases
 

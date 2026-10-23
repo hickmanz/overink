@@ -31,13 +31,31 @@ Native Swift/AppKit implementation of OverInk.
 - Single instance: launching a second copy shows the first one and quits
 - `overink://` links (need the bundled app): `overink://editor[?capture=<name or path in the library>]`, `overink://library`, `overink://settings`, `overink://draw`. Capture paths are only honored inside the library folder
 - Persistent drawing, toolbar position, and capture behavior settings
+- iPad remote (menu bar → iPad Remote…), compatible with the Windows host and serving the same web client from `shared/remote-web`:
+  - One port (default 8787) serves the web client, a WebSocket at `/ws`, `/health` and the `/lib` library routes. It is built on Network.framework with a small HTTP parser and WebSocket codec in `OverInkCore` (both unit-tested), and it only accepts private-network peers
+  - Pairing with a QR code (one-time code valid for 10 minutes), a chooser for the network interface the code advertises, a paired-devices list with "Forget", a shareable guest link with optional approval, and the Local Network permission. Device keys are stored as SHA-256 hashes, in the Keychain for signed builds and in a private file for development builds. Connections from this Mac's own loopback address are trusted without being remembered
+  - Live screen streaming with ScreenCaptureKit (one `SCStream` per display piece, composed and JPEG-encoded, only while someone is watching), with presets, a rectangle or display or all-displays target, and the "follow the toolbar" display
+  - Remote ink on the overlay: live strokes, shapes, partial erase, per-author undo/redo, clear, a roster and hover cursors, with ink revisions stamped on each frame so the iPad can drop its local copy at the right moment
+  - Remote library: browse, thumbnails, the original image, ink read and write (409 on a stale revision), duplicate, delete, capture from the iPad, and change notifications when files change on the Mac
+  - `shared/protocol/remote-v1.schema.json` describes every message; `RemoteSchemaConformanceTests` checks the host's output, the decoder and the shipped web client against it
 - Platform-neutral Swift models for geometry, ink, and remote protocol v1
 
 Capture documents are `CaptureDocument` version 2 (adds stroke `groupId`); version 1 files still open. The Mac format is independent of the Windows ISF-based library.
 
 ## Development launch arguments
 
-`OverInkMac --library`, `--settings`, and `--welcome` open those windows on launch, and `OverInkMac --open-editor <capture.png>` opens a capture in the editor. These also skip the single-instance check.
+`OverInkMac --library`, `--settings`, `--welcome` and `--remote-window` open those windows on launch, and `OverInkMac --open-editor <capture.png>` opens a capture in the editor. `--remote` runs the iPad remote server for this launch even when it is off in settings. `--snapshot-remote-window <png>` writes the Remote window to a file and quits (for layout checks without a screen). All of these skip the single-instance check.
+
+`scripts/run-mac-dev.sh` passes its arguments to the app, for example `./scripts/run-mac-dev.sh --remote`.
+
+## Testing the iPad remote
+
+```bash
+./scripts/run-mac-dev.sh --remote        # the dev bundle keeps its Screen Recording permission
+node scripts/remote-smoke.mjs             # protocol, ink, library and hygiene checks (Node 22+)
+```
+
+The smoke test connects from the same Mac, so it is auto-trusted. It draws on the real overlay and makes (then deletes) its own capture, which needs an awake screen; on a locked or sleeping display the library part is skipped. A real iPad needs the Mac's firewall and Local Network prompts answered once.
 
 ## Build and test
 
