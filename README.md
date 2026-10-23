@@ -1,13 +1,32 @@
 # OverInk
 
-OverInk is a Windows screen annotation app: draw over your display with a floating toolbar, capture to an editor with a local library, copy or drag images out, and optionally sketch from an iPad over the LAN.
+OverInk is a screen annotation app: draw over your display with a floating toolbar, capture to an editor with a local library, copy or drag images out, and optionally sketch from an iPad over the LAN.
 
-## Build
+## Windows build
 
 ```bash
 dotnet build src/OverInk/OverInk.csproj
 dotnet run --project src/OverInk/OverInk.csproj
 ```
+
+## macOS build
+
+The native Swift/AppKit macOS port is under `src/OverInk.Mac`. Its initial foundation includes a menu-bar app, per-display native overlays, draw/pass-through switching, Core Graphics ink, and ScreenCaptureKit capture support.
+
+```bash
+cd src/OverInk.Mac
+swift build
+swift test
+swift run OverInkMac
+```
+
+For a development `.app` with a stable identity for Screen Recording permissions:
+
+```bash
+./scripts/run-mac-dev.sh
+```
+
+Creating a production-signed `.app` still requires full Xcode. See `src/OverInk.Mac/README.md` for current status.
 
 ## Releases
 

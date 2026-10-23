@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,3 +24,20 @@ jobs:
 
       - name: Test
         run: dotnet test OverInk.slnx -c Release --no-build
+
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: src/OverInk.Mac
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Test
+        run: swift test
+
+      - name: Protocol and format checks
+        run: swift run -c release OverInkCoreChecks

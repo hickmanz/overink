@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://overink.app/protocol/remote-v1.schema.json",
+  "title": "OverInk Remote Protocol v1",
+  "description": "Canonical envelope and selected payload shapes shared by the Windows host, macOS host, and embedded iPad web client.",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/state" },
+    { "$ref": "#/$defs/strokeSnapshot" }
+  ],
+  "$defs": {
+    "envelope": {
+      "type": "object",
+      "required": ["t"],
+      "properties": {
+        "t": { "type": "string", "minLength": 1 }
+      }
+    },
+    "hello": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "type": "object",
+          "required": ["t", "v", "deviceName"],
+          "properties": {
+            "t": { "const": "hello" },
+            "v": { "const": 1 },
+            "deviceKey": { "type": ["string", "null"] },
+            "pair": { "type": ["string", "null"] },
+            "join": { "type": ["string", "null"] },
+            "deviceName": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "state": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "type": "object",
+          "required": ["t", "tool", "color", "size", "mode", "screenW", "screenH", "regionActive"],
+          "properties": {
+            "t": { "const": "state" },
+            "tool": { "type": "string" },
+            "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "size": { "type": "number", "exclusiveMinimum": 0 },
+            "mode": { "type": "string" },
+            "screenW": { "type": "number", "minimum": 0 },
+            "screenH": { "type": "number", "minimum": 0 },
+            "regionActive": { "type": "boolean" },
+            "pressureSensitive": { "type": "boolean" },
+            "screenVeil": { "type": "number", "minimum": 0, "maximum": 0.6 },
+            "customColors": {
+              "type": ["array", "null"],
+              "items": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+            },
+            "streamEpoch": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "strokeSnapshot": {
+      "type": "object",
+      "required": ["id", "color", "size", "pts", "ignorePressure"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "pts": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "ignorePressure": { "type": "boolean" }
+      }
+    }
+  }
+}
