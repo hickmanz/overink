@@ -25,6 +25,11 @@ Native Swift/AppKit implementation of OverInk.
   - Library folder can be changed from the menu-bar menu (default `~/Pictures/OverInk`)
 - Capture modes: display under the cursor or all displays stitched together, drag-to-select regions that can span displays, and window snap (hover a window and click)
 - Optional global capture hotkey (unbound by default), include-toolbar and open-editor-after-capture options, native-resolution Retina captures
+- Settings window (menu bar → Settings…): hotkey recorders for drawing and capture, capture and toolbar options, capture folder, open at login, and Screen Recording status
+- First-run welcome that walks through the Screen Recording permission and the draw hotkey
+- Open at login through `SMAppService` (works from the installed app)
+- Single instance: launching a second copy shows the first one and quits
+- `overink://` links (need the bundled app): `overink://editor[?capture=<name or path in the library>]`, `overink://library`, `overink://settings`, `overink://draw`. Capture paths are only honored inside the library folder
 - Persistent drawing, toolbar position, and capture behavior settings
 - Platform-neutral Swift models for geometry, ink, and remote protocol v1
 
@@ -32,7 +37,7 @@ Capture documents are `CaptureDocument` version 2 (adds stroke `groupId`); versi
 
 ## Development launch arguments
 
-`OverInkMac --library` opens the library window and `OverInkMac --open-editor <capture.png>` opens a capture in the editor on launch.
+`OverInkMac --library`, `--settings`, and `--welcome` open those windows on launch, and `OverInkMac --open-editor <capture.png>` opens a capture in the editor. These also skip the single-instance check.
 
 ## Build and test
 

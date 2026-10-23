@@ -121,3 +121,17 @@ import Testing
         #expect(!decoded.hideToolbarWhenNotDrawing)
     }
 }
+
+@Suite struct OnboardingSettingTests {
+    @Test func oldSettingsFilesDefaultToNotOnboarded() throws {
+        let decoded = try JSONDecoder().decode(MacAppSettings.self, from: Data("{}".utf8))
+        #expect(!decoded.hasCompletedOnboarding)
+    }
+
+    @Test func onboardingFlagRoundTrips() throws {
+        var settings = MacAppSettings()
+        settings.hasCompletedOnboarding = true
+        let decoded = try JSONDecoder().decode(MacAppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded.hasCompletedOnboarding)
+    }
+}

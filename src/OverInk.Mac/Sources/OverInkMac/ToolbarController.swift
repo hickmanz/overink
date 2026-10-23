@@ -31,6 +31,7 @@ final class ToolbarController: NSObject, NSWindowDelegate {
     private let onCaptureRegion: () -> Void
     private let onOpenLibrary: () -> Void
     private let onConfigureCaptureHotkey: () -> Void
+    private let onOpenSettings: () -> Void
 
     private var laidOutVertical: Bool?
     private var laidOutCompact: Bool?
@@ -53,7 +54,8 @@ final class ToolbarController: NSObject, NSWindowDelegate {
         onCapture: @escaping () -> Void,
         onCaptureRegion: @escaping () -> Void,
         onOpenLibrary: @escaping () -> Void,
-        onConfigureCaptureHotkey: @escaping () -> Void
+        onConfigureCaptureHotkey: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void
     ) {
         self.overlayController = overlayController
         self.settings = settings
@@ -61,6 +63,7 @@ final class ToolbarController: NSObject, NSWindowDelegate {
         self.onCaptureRegion = onCaptureRegion
         self.onOpenLibrary = onOpenLibrary
         self.onConfigureCaptureHotkey = onConfigureCaptureHotkey
+        self.onOpenSettings = onOpenSettings
 
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 52),
@@ -645,6 +648,10 @@ final class ToolbarController: NSObject, NSWindowDelegate {
         )
         menu.addItem(.separator())
 
+        let preferences = NSMenuItem(title: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: "")
+        preferences.target = self
+        menu.addItem(preferences)
+
         let permission = NSMenuItem(
             title: "Screen Recording Settings…",
             action: #selector(openScreenRecordingSettings),
@@ -689,6 +696,10 @@ final class ToolbarController: NSObject, NSWindowDelegate {
             string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         ) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func openSettingsFromMenu() {
+        onOpenSettings()
     }
 
     @objc private func hideFromMenu() {

@@ -45,6 +45,9 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
     /// Custom capture library folder. `nil` means `Pictures/OverInk`.
     public var libraryFolder: String?
 
+    /// Set once the first-run welcome (permissions, hotkey) has been shown.
+    public var hasCompletedOnboarding = false
+
     public init() {}
 
     public var captureBehavior: MacCaptureBehavior {
@@ -69,7 +72,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         case drawHotkey
         case toolbarVertical, compactTools, customColors, hideToolbarWhenNotDrawing
         case captureMode, captureHotkey, includeToolbarInCaptures, openEditorAfterCapture
-        case libraryFolder
+        case libraryFolder, hasCompletedOnboarding
     }
 
     public init(from decoder: Decoder) throws {
@@ -101,6 +104,8 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         openEditorAfterCapture = try c.decodeIfPresent(Bool.self, forKey: .openEditorAfterCapture)
             ?? d.openEditorAfterCapture
         libraryFolder = try c.decodeIfPresent(String.self, forKey: .libraryFolder)
+        hasCompletedOnboarding = try c.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding)
+            ?? d.hasCompletedOnboarding
     }
 }
 

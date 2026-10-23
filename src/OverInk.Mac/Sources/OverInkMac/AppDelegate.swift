@@ -2,7 +2,7 @@ import AppKit
 import OverInkCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let overlayController = OverlayController()
     private let captureService = ScreenCaptureService()
     private lazy var editorController = EditorWindowController(settings: settings)
@@ -31,19 +31,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var modeMenuItem: NSMenuItem?
     private var showedScreenPermissionHelp = false
+    private lazy var settingsController = SettingsWindowController(settings: settings)
+    private lazy var onboardingController = OnboardingWindowController(settings: settings) { [weak self] in
+        self?.openSettings()
+    }
+    private var loginItemMenuItem: NSMenuItem?
 
-    /// Launch arguments for development: `--library` or `--open-editor <path to a capture PNG>`.
+    /// Launch arguments for development: `--library`, `--settings`, `--welcome`, or `--open-editor <capture PNG>`.
     private func handleLaunchArguments() {
         let arguments = CommandLine.arguments
         if arguments.contains("--library") {
             editorController.showLibrary()
+        }
+        if arguments.contains("--settings") {
+            openSettings()
+        }
+        if arguments.contains("--welcome") {
+            onboardingController.show()
         }
         if let index = arguments.firstIndex(of: "--open-editor"), arguments.indices.contains(index + 1) {
             editorController.open(URL(fileURLWithPath: arguments[index + 1]))
         }
     }
 
+    private var isDevelopmentLaunch: Bool {
+        CommandLine.arguments.contains { ["--library", "--open-editor", "--settings", "--welcome"].contains($0) }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One copy at a time: a second launch asks the first to show itself and quits.
+        if !isDevelopmentLaunch, SingleInstance.handOffToExistingInstance() {
+            NSApplication.shared.terminate(nil)
+            return
+        }
+        SingleInstance.observeShowRequests { [weak self] in
+            self?.toolbarController?.show()
+        }
         applySettings()
         overlayController.session.observeSettings { [weak self] in
             self?.persistDrawingSettings()
@@ -58,7 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onCapture: { [weak self] in self?.capture() },
             onCaptureRegion: { [weak self] in self?.beginRegionCapture() },
             onOpenLibrary: { [weak self] in self?.openLibrary() },
-            onConfigureCaptureHotkey: { [weak self] in self?.configureCaptureHotkey() }
+            onConfigureCaptureHotkey: { [weak self] in self?.configureCaptureHotkey() },
+            onOpenSettings: { [weak self] in self?.openSettings() }
         )
         captureHotKey = HotKeyBinding(chord: settings.value.captureHotkey) { [weak self] in
             self?.beginRegionCapture()
@@ -97,8 +121,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.toolbarController?.show()
             }
         }
+        var lastDrawHotkey = settings.value.drawHotkey
+        settings.observe { [weak self] in
+            guard let self, self.settings.value.drawHotkey != lastDrawHotkey else { return }
+            let previous = lastDrawHotkey
+            lastDrawHotkey = self.settings.value.drawHotkey
+            self.drawToggleHotKey?.update(chord: lastDrawHotkey)
+            if self.drawToggleHotKey?.isRegistered == false {
+                // Keep the old shortcut when the new one is taken by macOS or another app.
+                let rejected = lastDrawHotkey
+                lastDrawHotkey = previous
+                self.drawToggleHotKey?.update(chord: previous)
+                self.settings.update { $0.drawHotkey = previous }
+                self.showAlert(
+                    message: "That shortcut is unavailable.",
+                    detail: "\(rejected.displayString) is reserved by macOS or another app. Choose a different shortcut."
+                )
+            }
+            self.refreshModeMenuItem(self.overlayController.mode)
+        }
         refreshModeMenuItem(overlayController.mode)
         handleLaunchArguments()
+        if !settings.value.hasCompletedOnboarding, !isDevelopmentLaunch {
+            onboardingController.show()
+        }
+    }
+
+    // MARK: URLs
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        urls.compactMap(AppURL.parse).forEach(perform)
+    }
+
+    private func perform(_ action: AppURLAction) {
+        switch action {
+        case .library:
+            openLibrary()
+        case .settings:
+            openSettings()
+        case .draw:
+            toolbarController?.show()
+            overlayController.toggleMode()
+        case let .editor(capture):
+            let folder = CaptureLibrary.folder(forSetting: settings.value.libraryFolder)
+            overlayController.setMode(.passThrough)
+            if let capture, let url = AppURL.resolveCapture(capture, in: folder) {
+                editorController.open(url)
+            } else {
+                editorController.showLibrary()
+            }
+        }
+    }
+
+    private func openSettings() {
+        overlayController.setMode(.passThrough)
+        settingsController.show()
     }
 
     /// The draw hotkey brings back a hidden toolbar and starts drawing; otherwise it toggles drawing.
@@ -148,21 +225,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         captureHotKey?.shutdown()
     }
 
-    @objc private func chooseLibraryFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Use Folder"
-        panel.message = "Choose where OverInk saves and lists captures."
-        panel.directoryURL = CaptureLibrary.folder(forSetting: settings.value.libraryFolder)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let isDefault = url.standardizedFileURL == CaptureLibrary.defaultFolder().standardizedFileURL
-        settings.update { $0.libraryFolder = isDefault ? nil : url.path }
-    }
-
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(
@@ -187,14 +249,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         libraryItem.target = self
         menu.addItem(libraryItem)
-
-        let folderItem = NSMenuItem(
-            title: "Library folder…",
-            action: #selector(chooseLibraryFolder),
-            keyEquivalent: ""
-        )
-        folderItem.target = self
-        menu.addItem(folderItem)
 
         let modeItem = NSMenuItem(
             title: "",
@@ -231,14 +285,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         regionMenuItem = regionCaptureItem
         refreshRegionMenuItemTitle()
 
-        let hotkeyItem = NSMenuItem(
-            title: "Capture hotkey…",
-            action: #selector(configureCaptureHotkeyFromMenu),
-            keyEquivalent: ""
-        )
-        hotkeyItem.target = self
-        menu.addItem(hotkeyItem)
-
         let undoItem = NSMenuItem(title: "Undo", action: #selector(undo), keyEquivalent: "z")
         undoItem.keyEquivalentModifierMask = [.command]
         undoItem.target = self
@@ -251,13 +297,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let screenPermissionItem = NSMenuItem(
-            title: "Request Screen Recording Permission…",
-            action: #selector(requestScreenCapturePermission),
-            keyEquivalent: ""
-        )
-        screenPermissionItem.target = self
-        menu.addItem(screenPermissionItem)
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
+        loginItem.target = self
+        menu.addItem(loginItem)
+        loginItemMenuItem = loginItem
+
+        let aboutItem = NSMenuItem(title: "About OverInk", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
 
         menu.addItem(.separator())
 
@@ -268,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menu.addItem(quitItem)
 
+        menu.delegate = self
         item.menu = menu
         statusItem = item
     }
@@ -339,18 +391,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.redo()
     }
 
-    @objc private func requestScreenCapturePermission() {
-        if captureService.requestAuthorization() {
+    @objc private func openSettingsFromMenu() {
+        openSettings()
+    }
+
+    @objc private func toggleLoginItem() {
+        do {
+            try LoginItem.setEnabled(!LoginItem.isEnabled)
+            if LoginItem.needsApproval { LoginItem.openSystemSettings() }
+        } catch {
             showAlert(
-                message: "Screen Recording is enabled.",
-                detail: "OverInk can capture and stream the desktop."
-            )
-        } else {
-            showAlert(
-                message: "Screen Recording permission is not enabled.",
-                detail: "Enable OverInk in System Settings → Privacy & Security → Screen Recording, then relaunch it."
+                message: "Couldn't change the login item",
+                detail: "\(error.localizedDescription)\n\nOpen at login works from the installed OverInk app."
             )
         }
+    }
+
+    @objc private func showAbout() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        NSApplication.shared.orderFrontStandardAboutPanel(nil)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        loginItemMenuItem?.state = LoginItem.isEnabled ? .on : .off
     }
 
     private func capture() {
