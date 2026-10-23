@@ -48,6 +48,9 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
     /// Set once the first-run welcome (permissions, hotkey) has been shown.
     public var hasCompletedOnboarding = false
 
+    /// Remote sketching from an iPad (server, streaming, pairing).
+    public var remote = RemoteSettings()
+
     public init() {}
 
     public var captureBehavior: MacCaptureBehavior {
@@ -72,7 +75,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         case drawHotkey
         case toolbarVertical, compactTools, customColors, hideToolbarWhenNotDrawing
         case captureMode, captureHotkey, includeToolbarInCaptures, openEditorAfterCapture
-        case libraryFolder, hasCompletedOnboarding
+        case libraryFolder, hasCompletedOnboarding, remote
     }
 
     public init(from decoder: Decoder) throws {
@@ -106,6 +109,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         libraryFolder = try c.decodeIfPresent(String.self, forKey: .libraryFolder)
         hasCompletedOnboarding = try c.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding)
             ?? d.hasCompletedOnboarding
+        remote = (try? c.decodeIfPresent(RemoteSettings.self, forKey: .remote)) ?? d.remote
     }
 }
 

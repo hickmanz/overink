@@ -16,7 +16,11 @@ let package = Package(
         .target(name: "OverInkCore"),
         .executableTarget(
             name: "OverInkMac",
-            dependencies: ["OverInkCore"]
+            dependencies: ["OverInkCore"],
+            resources: [
+                // Symlink to shared/remote-web: the iPad web client served by the remote server.
+                .copy("RemoteWeb")
+            ]
         ),
         .executableTarget(
             name: "OverInkCoreChecks",

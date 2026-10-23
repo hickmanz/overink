@@ -6,7 +6,7 @@ using Microsoft.Extensions.Primitives;
 namespace OverInk.Remote;
 
 /// <summary>
-/// Serves Remote/wwwroot files from embedded resources without a generated manifest.
+/// Serves shared/remote-web files from embedded resources without a generated manifest.
 /// </summary>
 public sealed class EmbeddedWwwRootFileProvider : IFileProvider
 {
