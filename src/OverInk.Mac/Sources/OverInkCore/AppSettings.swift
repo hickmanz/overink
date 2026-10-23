@@ -36,6 +36,12 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
     public var customColors: [String] = []
     public var hideToolbarWhenNotDrawing = false
 
+    public var captureMode = CaptureMode.auto
+    /// Global shortcut that starts region/window capture. Unbound by default (as on Windows).
+    public var captureHotkey: KeyChord?
+    public var includeToolbarInCaptures = false
+    public var openEditorAfterCapture = false
+
     public init() {}
 
     public var captureBehavior: MacCaptureBehavior {
@@ -59,6 +65,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         case toolbarX, toolbarY
         case drawHotkey
         case toolbarVertical, compactTools, customColors, hideToolbarWhenNotDrawing
+        case captureMode, captureHotkey, includeToolbarInCaptures, openEditorAfterCapture
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,6 +90,12 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         ).colors
         hideToolbarWhenNotDrawing = try c.decodeIfPresent(Bool.self, forKey: .hideToolbarWhenNotDrawing)
             ?? d.hideToolbarWhenNotDrawing
+        captureMode = (try? c.decodeIfPresent(CaptureMode.self, forKey: .captureMode)) ?? d.captureMode
+        captureHotkey = try? c.decodeIfPresent(KeyChord.self, forKey: .captureHotkey)
+        includeToolbarInCaptures = try c.decodeIfPresent(Bool.self, forKey: .includeToolbarInCaptures)
+            ?? d.includeToolbarInCaptures
+        openEditorAfterCapture = try c.decodeIfPresent(Bool.self, forKey: .openEditorAfterCapture)
+            ?? d.openEditorAfterCapture
     }
 }
 

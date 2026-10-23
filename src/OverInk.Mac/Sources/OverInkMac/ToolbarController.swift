@@ -30,6 +30,7 @@ final class ToolbarController: NSObject, NSWindowDelegate {
     private let onCapture: () -> Void
     private let onCaptureRegion: () -> Void
     private let onOpenLibrary: () -> Void
+    private let onConfigureCaptureHotkey: () -> Void
 
     private var laidOutVertical: Bool?
     private var laidOutCompact: Bool?
@@ -45,13 +46,15 @@ final class ToolbarController: NSObject, NSWindowDelegate {
         settings: SettingsModel,
         onCapture: @escaping () -> Void,
         onCaptureRegion: @escaping () -> Void,
-        onOpenLibrary: @escaping () -> Void
+        onOpenLibrary: @escaping () -> Void,
+        onConfigureCaptureHotkey: @escaping () -> Void
     ) {
         self.overlayController = overlayController
         self.settings = settings
         self.onCapture = onCapture
         self.onCaptureRegion = onCaptureRegion
         self.onOpenLibrary = onOpenLibrary
+        self.onConfigureCaptureHotkey = onConfigureCaptureHotkey
 
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 52),
@@ -258,6 +261,7 @@ final class ToolbarController: NSObject, NSWindowDelegate {
     private func applyLayout() {
         let vertical = settings.value.toolbarVertical
         let compact = settings.value.compactTools
+        panel.sharingType = settings.value.includeToolbarInCaptures ? .readOnly : .none
         refreshColor()
         updateMode(overlayController.mode)
         guard vertical != laidOutVertical || compact != laidOutCompact else { return }
@@ -628,16 +632,70 @@ final class ToolbarController: NSObject, NSWindowDelegate {
 
     @objc private func showCaptureMenu(_ sender: NSButton) {
         let menu = NSMenu()
-        let full = NSMenuItem(title: "Capture full display", action: #selector(capture), keyEquivalent: "")
-        full.target = self
-        full.image = LucideIcon.camera.image(size: 16, label: "Full display")
-        menu.addItem(full)
+        let value = settings.value
 
-        let region = NSMenuItem(title: "Select region…", action: #selector(captureRegion), keyEquivalent: "")
+        menu.addItem(NSMenuItem.sectionHeader(title: "Capture button"))
+        for (mode, title) in [
+            (CaptureMode.auto, "Display under cursor"),
+            (CaptureMode.fullScreen, "All displays")
+        ] {
+            let item = NSMenuItem(title: title, action: #selector(selectCaptureMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = value.captureMode == mode ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+
+        let region = NSMenuItem(
+            title: "Select region or window…" + (value.captureHotkey.map { " (\($0.displayString))" } ?? ""),
+            action: #selector(captureRegion),
+            keyEquivalent: ""
+        )
         region.target = self
-        region.image = LucideIcon.rectangle.image(size: 16, label: "Select region")
+        region.image = LucideIcon.rectangle.image(size: 16, label: "Select region or window")
         menu.addItem(region)
+        menu.addItem(.separator())
+
+        let toolbar = NSMenuItem(
+            title: "Include toolbar in captures",
+            action: #selector(toggleIncludeToolbar),
+            keyEquivalent: ""
+        )
+        toolbar.target = self
+        toolbar.state = value.includeToolbarInCaptures ? .on : .off
+        menu.addItem(toolbar)
+
+        let editor = NSMenuItem(
+            title: "Open editor after capture",
+            action: #selector(toggleOpenEditor),
+            keyEquivalent: ""
+        )
+        editor.target = self
+        editor.state = value.openEditorAfterCapture ? .on : .off
+        menu.addItem(editor)
+
+        let hotkey = NSMenuItem(title: "Capture hotkey…", action: #selector(configureHotkey), keyEquivalent: "")
+        hotkey.target = self
+        menu.addItem(hotkey)
         popUp(menu, from: sender)
+    }
+
+    @objc private func selectCaptureMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let mode = CaptureMode(rawValue: raw) else { return }
+        settings.update { $0.captureMode = mode }
+    }
+
+    @objc private func toggleIncludeToolbar() {
+        settings.update { $0.includeToolbarInCaptures.toggle() }
+    }
+
+    @objc private func toggleOpenEditor() {
+        settings.update { $0.openEditorAfterCapture.toggle() }
+    }
+
+    @objc private func configureHotkey() {
+        onConfigureCaptureHotkey()
     }
 
     @objc private func captureRegion() {

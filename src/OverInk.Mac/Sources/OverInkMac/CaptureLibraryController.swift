@@ -23,6 +23,12 @@ final class CaptureLibraryController: NSObject, NSCollectionViewDataSource, NSCo
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
+    func openEditor(for url: URL) {
+        editorController.open(url) { [weak self] in
+            self?.reload()
+        }
+    }
+
     func reload() {
         entries = loadEntries()
         emptyLabel.isHidden = !entries.isEmpty

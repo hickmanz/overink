@@ -60,8 +60,11 @@ actor ScreenCaptureService {
         }
         let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
         let configuration = SCStreamConfiguration()
-        configuration.width = display.width
-        configuration.height = display.height
+        // Capture at the display's native pixel size; `SCDisplay.width/height` are in points and
+        // would give a blurry half-resolution image on Retina displays.
+        let mode = CGDisplayCopyDisplayMode(id)
+        configuration.width = mode?.pixelWidth ?? display.width * 2
+        configuration.height = mode?.pixelHeight ?? display.height * 2
         configuration.showsCursor = false
         configuration.capturesAudio = false
 

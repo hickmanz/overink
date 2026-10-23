@@ -14,13 +14,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         excludedWindowIDs: { [weak self] in
             guard let self else { return [] }
             var ids = self.overlayController.windowIDs
-            if let toolbarID = self.toolbarController?.windowID {
+            if !self.settings.value.includeToolbarInCaptures,
+               let toolbarID = self.toolbarController?.windowID {
                 ids.insert(toolbarID)
             }
             return ids
         }
     )
     private var drawToggleHotKey: HotKeyBinding?
+    private var captureHotKey: HotKeyBinding?
+    private var regionMenuItem: NSMenuItem?
     private var toolbarController: ToolbarController?
     private var statusItem: NSStatusItem?
     private var modeMenuItem: NSMenuItem?
@@ -40,8 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings: settings,
             onCapture: { [weak self] in self?.capture() },
             onCaptureRegion: { [weak self] in self?.beginRegionCapture() },
-            onOpenLibrary: { [weak self] in self?.openLibrary() }
+            onOpenLibrary: { [weak self] in self?.openLibrary() },
+            onConfigureCaptureHotkey: { [weak self] in self?.configureCaptureHotkey() }
         )
+        captureHotKey = HotKeyBinding(chord: settings.value.captureHotkey) { [weak self] in
+            self?.beginRegionCapture()
+        }
         overlayController.modeDidChange = { [weak self] mode in
             guard let self else { return }
             self.refreshModeMenuItem(mode)
@@ -51,6 +58,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.show()
         if !(settings.value.hideToolbarWhenNotDrawing) {
             toolbarController?.show()
+        }
+        var lastCaptureHotkey = settings.value.captureHotkey
+        settings.observe { [weak self] in
+            guard let self, self.settings.value.captureHotkey != lastCaptureHotkey else { return }
+            lastCaptureHotkey = self.settings.value.captureHotkey
+            self.captureHotKey?.update(chord: lastCaptureHotkey)
+            self.refreshRegionMenuItemTitle()
+            if let chord = lastCaptureHotkey, self.captureHotKey?.isRegistered == false {
+                self.showAlert(
+                    message: "That shortcut is unavailable.",
+                    detail: "\(chord.displayString) is reserved by macOS or another app. Choose a different shortcut."
+                )
+            }
         }
         var lastAutoHide = settings.value.hideToolbarWhenNotDrawing
         settings.observe { [weak self] in
@@ -109,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         overlayController.shutdown()
         drawToggleHotKey?.shutdown()
+        captureHotKey?.shutdown()
     }
 
     private func configureStatusItem() {
@@ -162,12 +183,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(captureItem)
 
         let regionCaptureItem = NSMenuItem(
-            title: "Capture region…",
+            title: "Capture region or window…",
             action: #selector(captureRegionFromMenu),
             keyEquivalent: ""
         )
         regionCaptureItem.target = self
         menu.addItem(regionCaptureItem)
+        regionMenuItem = regionCaptureItem
+        refreshRegionMenuItemTitle()
+
+        let hotkeyItem = NSMenuItem(
+            title: "Capture hotkey…",
+            action: #selector(configureCaptureHotkeyFromMenu),
+            keyEquivalent: ""
+        )
+        hotkeyItem.target = self
+        menu.addItem(hotkeyItem)
 
         let undoItem = NSMenuItem(title: "Undo", action: #selector(undo), keyEquivalent: "z")
         undoItem.keyEquivalentModifierMask = [.command]
@@ -200,6 +231,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         item.menu = menu
         statusItem = item
+    }
+
+    private func refreshRegionMenuItemTitle() {
+        let suffix = settings.value.captureHotkey.map { " (\($0.displayString))" } ?? ""
+        regionMenuItem?.title = "Capture region or window…" + suffix
+    }
+
+    @objc private func configureCaptureHotkeyFromMenu() {
+        configureCaptureHotkey()
+    }
+
+    private func configureCaptureHotkey() {
+        overlayController.setMode(.passThrough)
+        HotKeyPrompt.present(
+            title: "Capture hotkey",
+            message: "Press the shortcut that starts a region or window capture. Press Delete to remove it.",
+            current: settings.value.captureHotkey
+        ) { [weak self] chord in
+            self?.settings.update { $0.captureHotkey = chord }
+        }
     }
 
     private var drawShortcutLabel: String {
@@ -264,27 +315,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func capture() {
-        // Permission prompts and error dialogs must never appear behind a mouse-capturing overlay.
-        let wasDrawing = overlayController.mode == .draw
-        overlayController.setMode(.passThrough)
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let mouse = NSEvent.mouseLocation
-                let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-                guard let screen else {
-                    throw ScreenCaptureError.displayUnavailable
-                }
-                let destination = try await captureCoordinator.captureDisplay(
-                    screen,
-                    copyToClipboard: settings.value.copyAfterCapture
-                )
-                finishCapture(destination, wasDrawing: wasDrawing)
-            } catch {
-                handleCaptureError(error)
-            }
-        }
+        let target: CaptureTarget = settings.value.captureMode == .fullScreen
+            ? .allDisplays
+            : .displayUnderCursor
+        runCapture(target, wasDrawing: overlayController.mode == .draw)
     }
 
     private func beginRegionCapture() {
@@ -299,24 +333,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return
             }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                do {
-                    let destination = try await captureCoordinator.captureRegion(
-                        screen: selection.screen,
-                        rect: selection.rect,
-                        copyToClipboard: settings.value.copyAfterCapture
-                    )
-                    finishCapture(destination, wasDrawing: wasDrawing)
-                } catch {
-                    handleCaptureError(error)
-                }
+            self.runCapture(.region(selection.rect), wasDrawing: wasDrawing, alreadyPassThrough: true)
+        }
+    }
+
+    private func runCapture(_ target: CaptureTarget, wasDrawing: Bool, alreadyPassThrough: Bool = false) {
+        // Permission prompts and error dialogs must never appear behind a mouse-capturing overlay.
+        if !alreadyPassThrough {
+            overlayController.setMode(.passThrough)
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let destination = try await captureCoordinator.capture(
+                    target,
+                    copyToClipboard: settings.value.copyAfterCapture
+                )
+                finishCapture(destination, wasDrawing: wasDrawing)
+            } catch {
+                // Show the error before re-entering draw mode so it is never under the overlay.
+                handleCaptureError(error)
+                if wasDrawing { overlayController.setMode(.draw) }
             }
         }
     }
 
     private func finishCapture(_ destination: URL, wasDrawing: Bool) {
         libraryController.reload()
+        if settings.value.openEditorAfterCapture {
+            libraryController.openEditor(for: destination)
+        }
         if settings.value.clearAfterCapture {
             overlayController.clear()
         }

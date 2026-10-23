@@ -2,6 +2,15 @@ import AppKit
 import Foundation
 import OverInkCore
 
+enum CaptureTarget {
+    /// The display under the mouse pointer.
+    case displayUnderCursor
+    /// Every display, stitched into a single image.
+    case allDisplays
+    /// A rectangle in global point coordinates (top-left origin); may span displays.
+    case region(CGRect)
+}
+
 @MainActor
 final class CaptureCoordinator {
     private let screenCapture: ScreenCaptureService
@@ -18,94 +27,68 @@ final class CaptureCoordinator {
         self.excludedWindowIDs = excludedWindowIDs
     }
 
-    func captureMainDisplay(copyToClipboard: Bool = true) async throws -> URL {
-        guard let screen = NSScreen.main else {
-            throw ScreenCaptureError.displayUnavailable
-        }
-        return try await captureDisplay(screen, copyToClipboard: copyToClipboard)
-    }
-
-    func captureDisplay(
-        _ screen: NSScreen,
-        copyToClipboard: Bool = true
-    ) async throws -> URL {
+    func capture(_ target: CaptureTarget, copyToClipboard: Bool = true) async throws -> URL {
         guard await screenCapture.requestAuthorizationIfNeeded() else {
             throw ScreenCaptureError.permissionDenied
         }
-        guard let displayID = screen.overInkDisplayID else {
-            throw ScreenCaptureError.displayUnavailable
-        }
-        return try await capture(
-            screen: screen,
-            displayID: displayID,
-            region: nil,
-            copyToClipboard: copyToClipboard
-        )
-    }
 
-    func captureRegion(
-        screen: NSScreen,
-        rect: NSRect,
-        copyToClipboard: Bool = true
-    ) async throws -> URL {
-        guard await screenCapture.requestAuthorizationIfNeeded() else {
-            throw ScreenCaptureError.permissionDenied
-        }
-        guard let displayID = screen.overInkDisplayID else {
-            throw ScreenCaptureError.displayUnavailable
-        }
-        return try await capture(
-            screen: screen,
-            displayID: displayID,
-            region: rect,
-            copyToClipboard: copyToClipboard
-        )
-    }
+        let displays = Self.currentDisplays()
+        guard !displays.isEmpty else { throw ScreenCaptureError.displayUnavailable }
 
-    private func capture(
-        screen: NSScreen,
-        displayID: CGDirectDisplayID,
-        region: NSRect?,
-        copyToClipboard: Bool
-    ) async throws -> URL {
-        let fullImage = try await screenCapture.captureDisplay(
-            id: displayID,
-            excludingWindowIDs: excludedWindowIDs()
-        )
-        let cleanImage: CGImage
-        let document: CaptureDocument
-        let outputSize: NSSize
-        if let region {
-            cleanImage = try crop(fullImage, to: region, on: screen)
-            document = CaptureDocument(
-                canvasWidth: region.width,
-                canvasHeight: region.height,
-                veilOpacity: annotationSession.veilOpacity,
-                strokes: StrokeGeometry.crop(
-                    annotationSession.strokes(for: displayID),
-                    to: PixelRect(
-                        x: region.minX,
-                        y: region.minY,
-                        width: region.width,
-                        height: region.height
-                    )
-                )
-            )
-            outputSize = region.size
-        } else {
-            cleanImage = fullImage
-            document = CaptureDocument(
-                canvasWidth: screen.frame.width,
-                canvasHeight: screen.frame.height,
-                veilOpacity: annotationSession.veilOpacity,
-                strokes: annotationSession.strokes(for: displayID)
-            )
-            outputSize = screen.frame.size
+        let rect: PixelRect
+        switch target {
+        case .displayUnderCursor:
+            let mouse = RegionPickerController.globalPoint(fromCocoa: NSEvent.mouseLocation)
+            guard let display = CaptureLayout.display(
+                at: PixelPoint(x: mouse.x, y: mouse.y),
+                in: displays
+            ) else {
+                throw ScreenCaptureError.displayUnavailable
+            }
+            rect = display.bounds
+        case .allDisplays:
+            guard let desktop = CaptureLayout.fullDesktop(displays) else {
+                throw ScreenCaptureError.displayUnavailable
+            }
+            rect = desktop
+        case let .region(region):
+            rect = PixelRect(region)
         }
-        let flattened = try CaptureRenderer.flattened(
-            background: cleanImage,
-            document: document
+
+        let pieces = CaptureLayout.plan(rect: rect, displays: displays)
+        guard !pieces.isEmpty else { throw ScreenCaptureError.displayUnavailable }
+
+        // One screenshot per display that the capture touches.
+        let excluded = excludedWindowIDs()
+        var images: [UInt32: CGImage] = [:]
+        for id in Set(pieces.map(\.displayID)) {
+            images[id] = try await screenCapture.captureDisplay(id: id, excludingWindowIDs: excluded)
+        }
+
+        let cleanImage = try CaptureRenderer.stitched(
+            pieces: pieces,
+            images: images,
+            displays: displays,
+            rect: rect
         )
+
+        var strokes: [InkStroke] = []
+        for piece in pieces {
+            guard let display = displays.first(where: { $0.id == piece.displayID }) else { continue }
+            strokes += CaptureLayout.localize(
+                annotationSession.strokes(for: piece.displayID),
+                displayBounds: display.bounds,
+                captureRect: rect
+            )
+        }
+        let document = CaptureDocument(
+            canvasWidth: rect.width,
+            canvasHeight: rect.height,
+            veilOpacity: annotationSession.veilOpacity,
+            strokes: strokes
+        )
+
+        let flattened = try CaptureRenderer.flattened(background: cleanImage, document: document)
         let destination = try captureDestination()
         try CaptureRenderer.pngData(for: cleanImage).write(
             to: CapturePackagePaths.original(for: destination),
@@ -115,26 +98,18 @@ final class CaptureCoordinator {
         try CaptureRenderer.pngData(for: flattened).write(to: destination, options: .atomic)
 
         if copyToClipboard {
-            let pasteboardImage = NSImage(cgImage: flattened, size: outputSize)
+            let pasteboardImage = NSImage(cgImage: flattened, size: NSSize(width: rect.width, height: rect.height))
             NSPasteboard.general.clearContents()
             NSPasteboard.general.writeObjects([pasteboardImage, destination as NSURL])
         }
         return destination
     }
 
-    private func crop(_ image: CGImage, to region: NSRect, on screen: NSScreen) throws -> CGImage {
-        let scaleX = Double(image.width) / screen.frame.width
-        let scaleY = Double(image.height) / screen.frame.height
-        let pixelRect = CGRect(
-            x: region.minX * scaleX,
-            y: region.minY * scaleY,
-            width: region.width * scaleX,
-            height: region.height * scaleY
-        ).integral
-        guard let cropped = image.cropping(to: pixelRect) else {
-            throw CaptureSaveError.encodingFailed
+    static func currentDisplays() -> [CaptureDisplay] {
+        NSScreen.screens.compactMap { screen in
+            guard let id = screen.overInkDisplayID else { return nil }
+            return CaptureDisplay(id: id, bounds: PixelRect(CGDisplayBounds(id)))
         }
-        return cropped
     }
 
     private func writeDocument(_ document: CaptureDocument, beside imageURL: URL) throws {

@@ -18,7 +18,8 @@ Native Swift/AppKit implementation of OverInk.
 - Capture package with flattened PNG, `.orig.png`, and versioned editable `.overink.json`
 - Native capture library with thumbnail grid, open, copy, reveal, and delete actions
 - Native editor with pen, eraser, undo/redo, color, width, veil, save, and copy
-- Multi-display full-screen capture and native drag-to-select region capture
+- Capture modes: display under the cursor or all displays stitched together, drag-to-select regions that can span displays, and window snap (hover a window and click)
+- Optional global capture hotkey (unbound by default), include-toolbar and open-editor-after-capture options, native-resolution Retina captures
 - Persistent drawing, toolbar position, and capture behavior settings
 - Platform-neutral Swift models for geometry, ink, and remote protocol v1
 
