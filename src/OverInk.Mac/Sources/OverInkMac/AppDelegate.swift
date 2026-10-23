@@ -6,6 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlayController = OverlayController()
     private let captureService = ScreenCaptureService()
     private let libraryController = CaptureLibraryController()
+    private let regionPicker = RegionPickerController()
+    private let settingsStore = MacSettingsStore()
+    private var settings = MacAppSettings()
     private lazy var captureCoordinator = CaptureCoordinator(
         screenCapture: captureService,
         annotationSession: overlayController.session,
@@ -29,13 +32,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var showedScreenPermissionHelp = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        settings = settingsStore.load()
+        applySettings()
+        overlayController.session.settingsChanged = { [weak self] in
+            self?.persistDrawingSettings()
+        }
         configureStatusItem()
         configureKeyboardShortcut()
         toolbarController = ToolbarController(
             overlayController: overlayController,
             onCapture: { [weak self] in self?.capture() },
-            onOpenLibrary: { [weak self] in self?.openLibrary() }
+            onCaptureRegion: { [weak self] in self?.beginRegionCapture() },
+            onOpenLibrary: { [weak self] in self?.openLibrary() },
+            captureBehavior: { [weak self] in
+                self?.settings.captureBehavior ?? MacAppSettings().captureBehavior
+            },
+            onCaptureBehaviorChanged: { [weak self] behavior in
+                guard let self else { return }
+                self.settings.captureBehavior = behavior
+                self.settingsStore.save(self.settings)
+            },
+            onMove: { [weak self] origin in
+                guard let self else { return }
+                self.settings.toolbarX = origin.x
+                self.settings.toolbarY = origin.y
+                self.settingsStore.save(self.settings)
+            }
         )
+        if let x = settings.toolbarX, let y = settings.toolbarY {
+            toolbarController?.setStoredOrigin(NSPoint(x: x, y: y))
+        }
         overlayController.modeDidChange = { [weak self] mode in
             self?.refreshModeMenuItem(mode)
             self?.toolbarController?.updateMode(mode)
@@ -44,6 +70,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.show()
         toolbarController?.show()
         refreshModeMenuItem(overlayController.mode)
+    }
+
+    private func applySettings() {
+        let session = overlayController.session
+        session.colorHex = settings.penColor
+        session.penWidth = settings.penWidth
+        session.pressureSensitive = settings.pressureSensitive
+        session.veilOpacity = settings.veilOpacity
+        session.tool = settings.tool
+    }
+
+    private func persistDrawingSettings() {
+        let session = overlayController.session
+        settings.penColor = session.colorHex
+        settings.penWidth = session.penWidth
+        settings.pressureSensitive = session.pressureSensitive
+        settings.veilOpacity = session.veilOpacity
+        settings.tool = session.tool
+        settingsStore.save(settings)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -105,6 +150,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         captureItem.target = self
         menu.addItem(captureItem)
+
+        let regionCaptureItem = NSMenuItem(
+            title: "Capture region…",
+            action: #selector(captureRegionFromMenu),
+            keyEquivalent: ""
+        )
+        regionCaptureItem.target = self
+        menu.addItem(regionCaptureItem)
 
         let undoItem = NSMenuItem(title: "Undo", action: #selector(undo), keyEquivalent: "z")
         undoItem.keyEquivalentModifierMask = [.command]
@@ -209,6 +262,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         capture()
     }
 
+    @objc private func captureRegionFromMenu() {
+        beginRegionCapture()
+    }
+
     @objc private func undo() {
         overlayController.undo()
     }
@@ -233,31 +290,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func capture() {
         // Permission prompts and error dialogs must never appear behind a mouse-capturing overlay.
+        let wasDrawing = overlayController.mode == .draw
         overlayController.setMode(.passThrough)
 
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let destination = try await captureCoordinator.captureMainDisplay()
-                libraryController.reload()
-                statusItem?.button?.toolTip = "Saved \(destination.lastPathComponent) and copied it"
-                NSSound(named: "Glass")?.play()
-            } catch ScreenCaptureError.permissionDenied {
-                if !showedScreenPermissionHelp {
-                    showedScreenPermissionHelp = true
-                    showScreenRecordingPermissionAlert()
-                } else {
-                    statusItem?.button?.toolTip =
-                        "Screen Recording permission is still required. Enable OverInk Dev in System Settings."
-                    NSSound.beep()
+                let mouse = NSEvent.mouseLocation
+                let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+                guard let screen else {
+                    throw ScreenCaptureError.displayUnavailable
                 }
-            } catch {
-                showAlert(
-                    message: "Capture failed",
-                    detail: error.localizedDescription
+                let destination = try await captureCoordinator.captureDisplay(
+                    screen,
+                    copyToClipboard: settings.copyAfterCapture
                 )
+                finishCapture(destination, wasDrawing: wasDrawing)
+            } catch {
+                handleCaptureError(error)
             }
         }
+    }
+
+    private func beginRegionCapture() {
+        let wasDrawing = overlayController.mode == .draw
+        overlayController.setMode(.passThrough)
+        toolbarController?.show()
+        regionPicker.begin { [weak self] selection in
+            guard let self else { return }
+            guard let selection else {
+                if wasDrawing {
+                    self.overlayController.setMode(.draw)
+                }
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let destination = try await captureCoordinator.captureRegion(
+                        screen: selection.screen,
+                        rect: selection.rect,
+                        copyToClipboard: settings.copyAfterCapture
+                    )
+                    finishCapture(destination, wasDrawing: wasDrawing)
+                } catch {
+                    handleCaptureError(error)
+                }
+            }
+        }
+    }
+
+    private func finishCapture(_ destination: URL, wasDrawing: Bool) {
+        libraryController.reload()
+        if settings.clearAfterCapture {
+            overlayController.clear()
+        }
+        if wasDrawing && !settings.exitDrawModeAfterCapture {
+            overlayController.setMode(.draw)
+        }
+        statusItem?.button?.toolTip = settings.copyAfterCapture
+            ? "Saved \(destination.lastPathComponent) and copied it"
+            : "Saved \(destination.lastPathComponent)"
+        NSSound(named: "Glass")?.play()
+    }
+
+    private func handleCaptureError(_ error: Error) {
+        if let captureError = error as? ScreenCaptureError,
+           case .permissionDenied = captureError {
+            if !showedScreenPermissionHelp {
+                showedScreenPermissionHelp = true
+                showScreenRecordingPermissionAlert()
+            } else {
+                statusItem?.button?.toolTip =
+                    "Screen Recording permission is still required. Enable OverInk Dev in System Settings."
+                NSSound.beep()
+            }
+            return
+        }
+        showAlert(
+            message: "Capture failed",
+            detail: error.localizedDescription
+        )
     }
 
     private func openLibrary() {

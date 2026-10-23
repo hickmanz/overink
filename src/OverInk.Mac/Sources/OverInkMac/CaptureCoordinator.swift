@@ -18,24 +18,85 @@ final class CaptureCoordinator {
         self.excludedWindowIDs = excludedWindowIDs
     }
 
-    func captureMainDisplay() async throws -> URL {
+    func captureMainDisplay(copyToClipboard: Bool = true) async throws -> URL {
+        guard let screen = NSScreen.main else {
+            throw ScreenCaptureError.displayUnavailable
+        }
+        return try await captureDisplay(screen, copyToClipboard: copyToClipboard)
+    }
+
+    func captureDisplay(
+        _ screen: NSScreen,
+        copyToClipboard: Bool = true
+    ) async throws -> URL {
         guard await screenCapture.requestAuthorizationIfNeeded() else {
             throw ScreenCaptureError.permissionDenied
         }
-        guard let screen = NSScreen.main, let displayID = screen.overInkDisplayID else {
+        guard let displayID = screen.overInkDisplayID else {
             throw ScreenCaptureError.displayUnavailable
         }
+        return try await capture(
+            screen: screen,
+            displayID: displayID,
+            region: nil,
+            copyToClipboard: copyToClipboard
+        )
+    }
 
-        let cleanImage = try await screenCapture.captureDisplay(
+    func captureRegion(
+        screen: NSScreen,
+        rect: NSRect,
+        copyToClipboard: Bool = true
+    ) async throws -> URL {
+        guard await screenCapture.requestAuthorizationIfNeeded() else {
+            throw ScreenCaptureError.permissionDenied
+        }
+        guard let displayID = screen.overInkDisplayID else {
+            throw ScreenCaptureError.displayUnavailable
+        }
+        return try await capture(
+            screen: screen,
+            displayID: displayID,
+            region: rect,
+            copyToClipboard: copyToClipboard
+        )
+    }
+
+    private func capture(
+        screen: NSScreen,
+        displayID: CGDirectDisplayID,
+        region: NSRect?,
+        copyToClipboard: Bool
+    ) async throws -> URL {
+        let fullImage = try await screenCapture.captureDisplay(
             id: displayID,
             excludingWindowIDs: excludedWindowIDs()
         )
-        let document = CaptureDocument(
-            canvasWidth: screen.frame.width,
-            canvasHeight: screen.frame.height,
-            veilOpacity: annotationSession.veilOpacity,
-            strokes: annotationSession.strokes(for: displayID)
-        )
+        let cleanImage: CGImage
+        let document: CaptureDocument
+        let outputSize: NSSize
+        if let region {
+            cleanImage = try crop(fullImage, to: region, on: screen)
+            document = CaptureDocument(
+                canvasWidth: region.width,
+                canvasHeight: region.height,
+                veilOpacity: annotationSession.veilOpacity,
+                strokes: croppedStrokes(
+                    annotationSession.strokes(for: displayID),
+                    to: region
+                )
+            )
+            outputSize = region.size
+        } else {
+            cleanImage = fullImage
+            document = CaptureDocument(
+                canvasWidth: screen.frame.width,
+                canvasHeight: screen.frame.height,
+                veilOpacity: annotationSession.veilOpacity,
+                strokes: annotationSession.strokes(for: displayID)
+            )
+            outputSize = screen.frame.size
+        }
         let flattened = try CaptureRenderer.flattened(
             background: cleanImage,
             document: document
@@ -48,10 +109,61 @@ final class CaptureCoordinator {
         try writeDocument(document, beside: destination)
         try CaptureRenderer.pngData(for: flattened).write(to: destination, options: .atomic)
 
-        let pasteboardImage = NSImage(cgImage: flattened, size: screen.frame.size)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([pasteboardImage, destination as NSURL])
+        if copyToClipboard {
+            let pasteboardImage = NSImage(cgImage: flattened, size: outputSize)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([pasteboardImage, destination as NSURL])
+        }
         return destination
+    }
+
+    private func crop(_ image: CGImage, to region: NSRect, on screen: NSScreen) throws -> CGImage {
+        let scaleX = Double(image.width) / screen.frame.width
+        let scaleY = Double(image.height) / screen.frame.height
+        let pixelRect = CGRect(
+            x: region.minX * scaleX,
+            y: region.minY * scaleY,
+            width: region.width * scaleX,
+            height: region.height * scaleY
+        ).integral
+        guard let cropped = image.cropping(to: pixelRect) else {
+            throw CaptureSaveError.encodingFailed
+        }
+        return cropped
+    }
+
+    private func croppedStrokes(_ strokes: [InkStroke], to region: NSRect) -> [InkStroke] {
+        strokes.compactMap { stroke in
+            guard let first = stroke.points.first else { return nil }
+            var minX = first.x
+            var maxX = first.x
+            var minY = first.y
+            var maxY = first.y
+            for point in stroke.points.dropFirst() {
+                minX = min(minX, point.x)
+                maxX = max(maxX, point.x)
+                minY = min(minY, point.y)
+                maxY = max(maxY, point.y)
+            }
+            let bounds = NSRect(
+                x: minX,
+                y: minY,
+                width: max(maxX - minX, 1),
+                height: max(maxY - minY, 1)
+            ).insetBy(dx: -stroke.width, dy: -stroke.width)
+            guard bounds.intersects(region) else {
+                return nil
+            }
+            var shifted = stroke
+            shifted.points = stroke.points.map {
+                InkPoint(
+                    x: $0.x - region.minX,
+                    y: $0.y - region.minY,
+                    pressure: $0.pressure
+                )
+            }
+            return shifted
+        }
     }
 
     private func writeDocument(_ document: CaptureDocument, beside imageURL: URL) throws {

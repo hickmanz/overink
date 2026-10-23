@@ -18,17 +18,30 @@ final class AnnotationSession {
     private var undoStack: [Edit] = []
     private var redoStack: [Edit] = []
 
-    var colorHex = "#E53935"
-    var penWidth = 4.0
-    var tool = SketchTool.pen
-    var pressureSensitive = true
+    var colorHex = "#E53935" {
+        didSet { settingsChanged?() }
+    }
+    var penWidth = 4.0 {
+        didSet {
+            penWidth = min(max(penWidth, 1), 24)
+            settingsChanged?()
+        }
+    }
+    var tool = SketchTool.pen {
+        didSet { settingsChanged?() }
+    }
+    var pressureSensitive = true {
+        didSet { settingsChanged?() }
+    }
     var veilOpacity = 0.0 {
         didSet {
             veilOpacity = min(max(veilOpacity, 0), 0.6)
             changed?()
+            settingsChanged?()
         }
     }
     var changed: (() -> Void)?
+    var settingsChanged: (() -> Void)?
 
     func strokes(for displayID: CGDirectDisplayID) -> [InkStroke] {
         strokes.lazy

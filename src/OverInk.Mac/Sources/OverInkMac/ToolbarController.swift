@@ -2,7 +2,7 @@ import AppKit
 import OverInkCore
 
 @MainActor
-final class ToolbarController: NSObject {
+final class ToolbarController: NSObject, NSWindowDelegate {
     private let panel: NSPanel
     private let modeButton: NSButton
     private let toolButton: NSButton
@@ -11,19 +11,32 @@ final class ToolbarController: NSObject {
     private let veilButton = NSButton()
     private let overlayController: OverlayController
     private let onCapture: () -> Void
+    private let onCaptureRegion: () -> Void
     private let onOpenLibrary: () -> Void
+    private let captureBehavior: () -> MacCaptureBehavior
+    private let onCaptureBehaviorChanged: (MacCaptureBehavior) -> Void
+    private let onMove: (NSPoint) -> Void
+    private var storedOrigin: NSPoint?
 
     init(
         overlayController: OverlayController,
         onCapture: @escaping () -> Void,
-        onOpenLibrary: @escaping () -> Void
+        onCaptureRegion: @escaping () -> Void,
+        onOpenLibrary: @escaping () -> Void,
+        captureBehavior: @escaping () -> MacCaptureBehavior,
+        onCaptureBehaviorChanged: @escaping (MacCaptureBehavior) -> Void,
+        onMove: @escaping (NSPoint) -> Void
     ) {
         self.overlayController = overlayController
         self.onCapture = onCapture
+        self.onCaptureRegion = onCaptureRegion
         self.onOpenLibrary = onOpenLibrary
+        self.captureBehavior = captureBehavior
+        self.onCaptureBehaviorChanged = onCaptureBehaviorChanged
+        self.onMove = onMove
 
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 672, height: 58),
+            contentRect: NSRect(x: 0, y: 0, width: 708, height: 58),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -41,8 +54,16 @@ final class ToolbarController: NSObject {
     }
 
     func show() {
-        positionOnMainScreen()
+        if let storedOrigin {
+            panel.setFrameOrigin(storedOrigin)
+        } else {
+            positionOnMainScreen()
+        }
         panel.orderFrontRegardless()
+    }
+
+    func setStoredOrigin(_ origin: NSPoint?) {
+        storedOrigin = origin
     }
 
     var windowID: CGWindowID {
@@ -78,6 +99,7 @@ final class ToolbarController: NSObject {
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.sharingType = .none
+        panel.delegate = self
     }
 
     private func configureContent() {
@@ -103,6 +125,11 @@ final class ToolbarController: NSObject {
         let redoButton = makeButton(icon: .redo, label: "Redo", action: #selector(redo))
         let clearButton = makeButton(icon: .trash, label: "Clear annotations", action: #selector(clear))
         let captureButton = makeCaptureButton()
+        let captureMenuButton = makeButton(
+            icon: .chevronDown,
+            label: "Capture options",
+            action: #selector(showCaptureMenu)
+        )
         let libraryButton = makeButton(icon: .images, label: "Capture library", action: #selector(openLibrary))
         let moreButton = makeButton(icon: .settings, label: "More", action: #selector(showMoreMenu))
 
@@ -122,6 +149,7 @@ final class ToolbarController: NSObject {
                 clearButton,
                 divider(),
                 captureButton,
+                captureMenuButton,
                 libraryButton,
                 moreButton
             ]
@@ -390,12 +418,67 @@ final class ToolbarController: NSObject {
         onCapture()
     }
 
+    @objc private func showCaptureMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        let full = NSMenuItem(
+            title: "Capture full display",
+            action: #selector(capture),
+            keyEquivalent: ""
+        )
+        full.target = self
+        full.image = LucideIcon.camera.image(size: 16, label: "Full display")
+        menu.addItem(full)
+
+        let region = NSMenuItem(
+            title: "Select region…",
+            action: #selector(captureRegion),
+            keyEquivalent: ""
+        )
+        region.target = self
+        region.image = LucideIcon.rectangle.image(size: 16, label: "Select region")
+        menu.addItem(region)
+        popUp(menu, from: sender)
+    }
+
+    @objc private func captureRegion() {
+        onCaptureRegion()
+    }
+
     @objc private func openLibrary() {
         onOpenLibrary()
     }
 
     @objc private func showMoreMenu() {
         let menu = NSMenu()
+        let behavior = captureBehavior()
+        let copy = NSMenuItem(
+            title: "Copy after capture",
+            action: #selector(toggleCopyAfterCapture),
+            keyEquivalent: ""
+        )
+        copy.target = self
+        copy.state = behavior.copyAfterCapture ? .on : .off
+        menu.addItem(copy)
+
+        let exit = NSMenuItem(
+            title: "Exit draw mode after capture",
+            action: #selector(toggleExitAfterCapture),
+            keyEquivalent: ""
+        )
+        exit.target = self
+        exit.state = behavior.exitDrawModeAfterCapture ? .on : .off
+        menu.addItem(exit)
+
+        let clear = NSMenuItem(
+            title: "Clear drawing after capture",
+            action: #selector(toggleClearAfterCapture),
+            keyEquivalent: ""
+        )
+        clear.target = self
+        clear.state = behavior.clearAfterCapture ? .on : .off
+        menu.addItem(clear)
+        menu.addItem(.separator())
+
         let permission = NSMenuItem(
             title: "Screen Recording Settings…",
             action: #selector(openScreenRecordingSettings),
@@ -409,6 +492,24 @@ final class ToolbarController: NSObject {
         hideItem.image = LucideIcon.minus.image(size: 16, label: "Hide")
         menu.addItem(hideItem)
         popUp(menu, from: panel.contentView ?? NSView())
+    }
+
+    @objc private func toggleCopyAfterCapture() {
+        var behavior = captureBehavior()
+        behavior.copyAfterCapture.toggle()
+        onCaptureBehaviorChanged(behavior)
+    }
+
+    @objc private func toggleExitAfterCapture() {
+        var behavior = captureBehavior()
+        behavior.exitDrawModeAfterCapture.toggle()
+        onCaptureBehaviorChanged(behavior)
+    }
+
+    @objc private func toggleClearAfterCapture() {
+        var behavior = captureBehavior()
+        behavior.clearAfterCapture.toggle()
+        onCaptureBehaviorChanged(behavior)
     }
 
     @objc private func openScreenRecordingSettings() {
@@ -428,6 +529,11 @@ final class ToolbarController: NSObject {
             at: NSPoint(x: 0, y: view.bounds.height + 6),
             in: view
         )
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        storedOrigin = panel.frame.origin
+        onMove(panel.frame.origin)
     }
 }
 
