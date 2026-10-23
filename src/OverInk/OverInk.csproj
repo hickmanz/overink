@@ -44,6 +44,7 @@
     <!-- The web client is shared with the macOS app (shared/remote-web). Keep the logical names the
          EmbeddedWwwRootFileProvider expects: OverInk.Remote.wwwroot.<file>. -->
     <EmbeddedResource Include="..\..\shared\remote-web\**\*"
-                      LogicalName="OverInk.Remote.wwwroot.%(RecursiveDir)%(Filename)%(Extension)" />  </ItemGroup>
+                      LogicalName="OverInk.Remote.wwwroot.%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
 
 </Project>

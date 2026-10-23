@@ -37,8 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var loginItemMenuItem: NSMenuItem?
     private var remoteHost: RemoteHost?
+    private var remoteWindowController: RemoteWindowController?
 
-    /// Launch arguments for development: `--library`, `--settings`, `--welcome`, or `--open-editor <capture PNG>`.
+    /// Launch arguments for development: `--library`, `--settings`, `--welcome`, `--remote` (serve even when off in settings), `--remote-window`, or `--open-editor <capture PNG>`.
     private func handleLaunchArguments() {
         let arguments = CommandLine.arguments
         if arguments.contains("--library") {
@@ -46,6 +47,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if arguments.contains("--settings") {
             openSettings()
+        }
+        if arguments.contains("--remote-window") {
+            openRemote()
+        }
+        if let index = arguments.firstIndex(of: "--snapshot-remote-window"), arguments.indices.contains(index + 1) {
+            let url = URL(fileURLWithPath: arguments[index + 1])
+            // Give the server a moment to come up so the window shows its running state.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.remoteWindowController?.writeSnapshot(to: url)
+                NSApplication.shared.terminate(nil)
+            }
         }
         if arguments.contains("--welcome") {
             onboardingController.show()
@@ -56,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var isDevelopmentLaunch: Bool {
-        CommandLine.arguments.contains { ["--library", "--open-editor", "--settings", "--welcome", "--remote"].contains($0) }
+        CommandLine.arguments.contains { ["--library", "--open-editor", "--settings", "--welcome", "--remote", "--remote-window", "--snapshot-remote-window"].contains($0) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -244,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         remoteHost = host
+        remoteWindowController = RemoteWindowController(host: host, settings: settings)
         var lastRemote = settings.value.remote
         settings.observe { [weak self] in
             guard let self, self.settings.value.remote != lastRemote else { return }
@@ -332,6 +345,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(redoItem)
 
         menu.addItem(.separator())
+
+        let remoteItem = NSMenuItem(title: "iPad Remote…", action: #selector(openRemoteFromMenu), keyEquivalent: "")
+        remoteItem.target = self
+        menu.addItem(remoteItem)
 
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
         settingsItem.target = self
@@ -425,6 +442,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func redo() {
         overlayController.redo()
+    }
+
+    @objc private func openRemoteFromMenu() {
+        openRemote()
+    }
+
+    private func openRemote() {
+        overlayController.setMode(.passThrough)
+        remoteWindowController?.show()
     }
 
     @objc private func openSettingsFromMenu() {

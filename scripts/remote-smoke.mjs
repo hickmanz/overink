@@ -85,7 +85,7 @@ try {
 
   check("welcome has client id", typeof a.welcome.clientId === "string" && a.welcome.clientId.length > 0);
   check("welcome has stream size", a.welcome.screenW > 0 && a.welcome.screenH > 0);
-  check("loopback receives a device key", typeof a.welcome.deviceKey === "string");
+  check("loopback is trusted without storing a device key", a.welcome.deviceKey === undefined || a.welcome.deviceKey === null);
   check("welcome state has tool", typeof a.welcome.state.tool === "string");
 
   // Other iPads or browser tabs may be connected too, so look for our two by id.

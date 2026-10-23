@@ -2,75 +2,482 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://overink.app/protocol/remote-v1.schema.json",
   "title": "OverInk Remote Protocol v1",
-  "description": "Canonical envelope and selected payload shapes shared by the Windows host, macOS host, and embedded iPad web client.",
-  "oneOf": [
-    { "$ref": "#/$defs/hello" },
-    { "$ref": "#/$defs/state" },
-    { "$ref": "#/$defs/strokeSnapshot" }
+  "description": "Every JSON message exchanged on the /ws WebSocket between the iPad web client and a host (Windows or macOS). Each message is one JSON object whose `t` names its type. The first message from the client must be `hello`. Besides these text messages the host sends binary frames: [type=1 (u8)][seq (u32 LE)][inkRevision (i64 LE)][width (u16 LE)][height (u16 LE)][JPEG], a 17-byte header followed by the image. Coordinates named x/y/x1/y1/x2/y2 and the pairs inside `pts` are fractions (0-1) of the streamed rectangle; stroke and eraser sizes are in the host's logical points. Stroke ids are lowercase GUID strings.",
+  "anyOf": [
+    { "$ref": "#/$defs/clientMessage" },
+    { "$ref": "#/$defs/serverMessage" }
   ],
   "$defs": {
-    "envelope": {
+    "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+    "fraction": { "type": "number" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "shapeTool": {
+      "enum": ["Line", "Arrow", "Rectangle", "Ellipse", "line", "arrow", "rectangle", "ellipse"]
+    },
+    "points3": {
+      "description": "x, y, pressure triples.",
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 60000
+    },
+    "points2": {
+      "description": "x, y pairs.",
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 60000
+    },
+
+    "clientMessage": {
+      "description": "Sent by the iPad.",
+      "oneOf": [
+        { "$ref": "#/$defs/hello" },
+        { "$ref": "#/$defs/strokeBegin" },
+        { "$ref": "#/$defs/strokePoints" },
+        { "$ref": "#/$defs/strokeEnd" },
+        { "$ref": "#/$defs/strokeCancel" },
+        { "$ref": "#/$defs/shapePreview" },
+        { "$ref": "#/$defs/shapeCommit" },
+        { "$ref": "#/$defs/erase" },
+        { "$ref": "#/$defs/setTool" },
+        { "$ref": "#/$defs/setColor" },
+        { "$ref": "#/$defs/saveColor" },
+        { "$ref": "#/$defs/removeColor" },
+        { "$ref": "#/$defs/setSize" },
+        { "$ref": "#/$defs/setPressure" },
+        { "$ref": "#/$defs/setVeil" },
+        { "$ref": "#/$defs/undo" },
+        { "$ref": "#/$defs/redo" },
+        { "$ref": "#/$defs/clear" },
+        { "$ref": "#/$defs/ping" },
+        { "$ref": "#/$defs/hover" },
+        { "$ref": "#/$defs/viewMode" },
+        { "$ref": "#/$defs/capture" }
+      ]
+    },
+
+    "serverMessage": {
+      "description": "Sent by the host.",
+      "oneOf": [
+        { "$ref": "#/$defs/welcome" },
+        { "$ref": "#/$defs/error" },
+        { "$ref": "#/$defs/state" },
+        { "$ref": "#/$defs/roster" },
+        { "$ref": "#/$defs/ack" },
+        { "$ref": "#/$defs/pong" },
+        { "$ref": "#/$defs/strokesRemoved" },
+        { "$ref": "#/$defs/strokesAdded" },
+        { "$ref": "#/$defs/cleared" },
+        { "$ref": "#/$defs/captured" },
+        { "$ref": "#/$defs/captureFailed" },
+        { "$ref": "#/$defs/libraryChanged" },
+        { "$ref": "#/$defs/libraryItemChanged" },
+        { "$ref": "#/$defs/peerStrokeBegin" },
+        { "$ref": "#/$defs/peerStrokePoints" },
+        { "$ref": "#/$defs/peerStrokeEnd" },
+        { "$ref": "#/$defs/peerStrokeCancel" },
+        { "$ref": "#/$defs/peerShapePreview" },
+        { "$ref": "#/$defs/peerShapeCommit" },
+        { "$ref": "#/$defs/hover" }
+      ]
+    },
+
+    "hello": {
+      "description": "First message. Authentication order on the host: `pair` (single use, 10 minutes, issues a device key), then `deviceKey`, then `join` (session guest link, may need host approval), then a trusted loopback address.",
       "type": "object",
-      "required": ["t"],
+      "required": ["t", "v", "deviceName"],
       "properties": {
-        "t": { "type": "string", "minLength": 1 }
+        "t": { "const": "hello" },
+        "v": { "const": 1 },
+        "deviceKey": { "type": ["string", "null"] },
+        "pair": { "type": ["string", "null"] },
+        "join": { "type": ["string", "null"] },
+        "deviceName": { "type": "string", "minLength": 1 }
       }
     },
-    "hello": {
-      "allOf": [
-        { "$ref": "#/$defs/envelope" },
-        {
-          "type": "object",
-          "required": ["t", "v", "deviceName"],
-          "properties": {
-            "t": { "const": "hello" },
-            "v": { "const": 1 },
-            "deviceKey": { "type": ["string", "null"] },
-            "pair": { "type": ["string", "null"] },
-            "join": { "type": ["string", "null"] },
-            "deviceName": { "type": "string", "minLength": 1 }
-          }
-        }
-      ]
+
+    "strokeBegin": {
+      "type": "object",
+      "required": ["t", "id", "x", "y"],
+      "properties": {
+        "t": { "const": "strokeBegin" },
+        "id": { "$ref": "#/$defs/id" },
+        "color": { "type": "string" },
+        "size": { "type": "number" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "p": { "type": "number" }
+      }
     },
+    "strokePoints": {
+      "type": "object",
+      "required": ["t", "id", "pts"],
+      "properties": {
+        "t": { "const": "strokePoints" },
+        "id": { "$ref": "#/$defs/id" },
+        "pts": { "$ref": "#/$defs/points3" }
+      }
+    },
+    "strokeEnd": {
+      "type": "object",
+      "required": ["t", "id"],
+      "properties": { "t": { "const": "strokeEnd" }, "id": { "$ref": "#/$defs/id" } }
+    },
+    "strokeCancel": {
+      "type": "object",
+      "required": ["t", "id"],
+      "properties": { "t": { "const": "strokeCancel" }, "id": { "$ref": "#/$defs/id" } }
+    },
+    "shapePreview": {
+      "type": "object",
+      "required": ["t", "id", "tool", "x1", "y1", "x2", "y2"],
+      "properties": {
+        "t": { "const": "shapePreview" },
+        "id": { "$ref": "#/$defs/id" },
+        "tool": { "$ref": "#/$defs/shapeTool" },
+        "x1": { "type": "number" },
+        "y1": { "type": "number" },
+        "x2": { "type": "number" },
+        "y2": { "type": "number" },
+        "color": { "type": "string" },
+        "size": { "type": "number" }
+      }
+    },
+    "shapeCommit": {
+      "type": "object",
+      "required": ["t", "id", "tool", "x1", "y1", "x2", "y2"],
+      "properties": {
+        "t": { "const": "shapeCommit" },
+        "id": { "$ref": "#/$defs/id" },
+        "tool": { "$ref": "#/$defs/shapeTool" },
+        "x1": { "type": "number" },
+        "y1": { "type": "number" },
+        "x2": { "type": "number" },
+        "y2": { "type": "number" },
+        "color": { "type": "string" },
+        "size": { "type": "number" }
+      }
+    },
+    "erase": {
+      "description": "One pair is a tap; two or more are the ends of a swept segment. `size` is the eraser diameter in host points.",
+      "type": "object",
+      "required": ["t", "pts", "size"],
+      "properties": {
+        "t": { "const": "erase" },
+        "pts": { "$ref": "#/$defs/points2" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "whole": { "type": "boolean" }
+      }
+    },
+    "setTool": {
+      "type": "object",
+      "required": ["t", "tool"],
+      "properties": { "t": { "const": "setTool" }, "tool": { "type": "string", "minLength": 1 } }
+    },
+    "setColor": {
+      "type": "object",
+      "required": ["t", "color"],
+      "properties": { "t": { "const": "setColor" }, "color": { "$ref": "#/$defs/color" } }
+    },
+    "saveColor": {
+      "type": "object",
+      "required": ["t", "color"],
+      "properties": { "t": { "const": "saveColor" }, "color": { "$ref": "#/$defs/color" } }
+    },
+    "removeColor": {
+      "type": "object",
+      "required": ["t", "color"],
+      "properties": { "t": { "const": "removeColor" }, "color": { "$ref": "#/$defs/color" } }
+    },
+    "setSize": {
+      "type": "object",
+      "required": ["t", "size"],
+      "properties": { "t": { "const": "setSize" }, "size": { "type": "number", "exclusiveMinimum": 0 } }
+    },
+    "setPressure": {
+      "type": "object",
+      "required": ["t", "enabled"],
+      "properties": { "t": { "const": "setPressure" }, "enabled": { "type": "boolean" } }
+    },
+    "setVeil": {
+      "description": "Screen veil opacity; the host clamps it to 0-0.6.",
+      "type": "object",
+      "required": ["t", "value"],
+      "properties": { "t": { "const": "setVeil" }, "value": { "type": "number", "minimum": 0, "maximum": 1 } }
+    },
+    "undo": {
+      "description": "Undoes this client's own last edit.",
+      "type": "object",
+      "required": ["t"],
+      "properties": { "t": { "const": "undo" } }
+    },
+    "redo": {
+      "type": "object",
+      "required": ["t"],
+      "properties": { "t": { "const": "redo" } }
+    },
+    "clear": {
+      "type": "object",
+      "required": ["t"],
+      "properties": { "t": { "const": "clear" } }
+    },
+    "ping": {
+      "type": "object",
+      "required": ["t"],
+      "properties": { "t": { "const": "ping" }, "ms": { "type": "number" } }
+    },
+    "hover": {
+      "description": "Pointer position for the other participants. The host overwrites `clientId` with the sender's real id.",
+      "type": "object",
+      "required": ["t", "clientId", "x", "y"],
+      "properties": {
+        "t": { "const": "hover" },
+        "clientId": { "type": "string" },
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "viewMode": {
+      "description": "`doc`: the client is editing a library capture and wants no live frames; `live`: back to the stream.",
+      "type": "object",
+      "required": ["t", "mode"],
+      "properties": { "t": { "const": "viewMode" }, "mode": { "enum": ["doc", "live"] } }
+    },
+    "capture": {
+      "description": "Save the streamed rectangle (with its ink) to the library.",
+      "type": "object",
+      "required": ["t"],
+      "properties": { "t": { "const": "capture" } }
+    },
+
     "state": {
-      "allOf": [
-        { "$ref": "#/$defs/envelope" },
-        {
-          "type": "object",
-          "required": ["t", "tool", "color", "size", "mode", "screenW", "screenH", "regionActive"],
-          "properties": {
-            "t": { "const": "state" },
-            "tool": { "type": "string" },
-            "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
-            "size": { "type": "number", "exclusiveMinimum": 0 },
-            "mode": { "type": "string" },
-            "screenW": { "type": "number", "minimum": 0 },
-            "screenH": { "type": "number", "minimum": 0 },
-            "regionActive": { "type": "boolean" },
-            "pressureSensitive": { "type": "boolean" },
-            "screenVeil": { "type": "number", "minimum": 0, "maximum": 0.6 },
-            "customColors": {
-              "type": ["array", "null"],
-              "items": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
-            },
-            "streamEpoch": { "type": "integer", "minimum": 0 }
+      "type": "object",
+      "required": ["t", "tool", "color", "size", "mode", "screenW", "screenH", "regionActive"],
+      "properties": {
+        "t": { "const": "state" },
+        "tool": { "type": "string" },
+        "color": { "$ref": "#/$defs/color" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "mode": { "enum": ["Draw", "PassThrough"] },
+        "screenW": { "type": "number", "minimum": 0 },
+        "screenH": { "type": "number", "minimum": 0 },
+        "regionActive": { "type": "boolean" },
+        "pressureSensitive": { "type": "boolean" },
+        "screenVeil": { "type": "number", "minimum": 0, "maximum": 0.6 },
+        "customColors": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/color" }
+        },
+        "streamEpoch": { "type": "integer", "minimum": 0 },
+        "monitors": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "required": ["x", "y", "w", "h", "primary"],
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "w": { "type": "number" },
+              "h": { "type": "number" },
+              "primary": { "type": "boolean" }
+            }
           }
         }
-      ]
+      }
+    },
+    "welcome": {
+      "type": "object",
+      "required": ["t", "v", "clientId", "screenW", "screenH", "state", "inkRevision"],
+      "properties": {
+        "t": { "const": "welcome" },
+        "v": { "const": 1 },
+        "clientId": { "type": "string", "minLength": 1 },
+        "deviceKey": { "type": ["string", "null"] },
+        "screenW": { "type": "number", "minimum": 0 },
+        "screenH": { "type": "number", "minimum": 0 },
+        "state": {
+          "type": "object",
+          "required": ["tool", "color", "size", "mode", "screenW", "screenH", "regionActive"]
+        },
+        "inkRevision": { "type": "integer", "minimum": 0 },
+        "libToken": { "type": ["string", "null"] }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["t", "code", "message"],
+      "properties": {
+        "t": { "const": "error" },
+        "code": {
+          "enum": ["badHello", "versionMismatch", "badToken", "approvalRequired", "denied", "sessionFull"]
+        },
+        "message": { "type": "string" }
+      }
+    },
+    "roster": {
+      "type": "object",
+      "required": ["t", "participants"],
+      "properties": {
+        "t": { "const": "roster" },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["clientId", "name", "color"],
+            "properties": {
+              "clientId": { "type": "string" },
+              "name": { "type": "string" },
+              "color": { "$ref": "#/$defs/color" }
+            }
+          }
+        }
+      }
+    },
+    "ack": {
+      "description": "A stroke or shape was committed. The frame carrying it has `inkRevision` >= this value.",
+      "type": "object",
+      "required": ["t", "id", "inkRevision"],
+      "properties": {
+        "t": { "const": "ack" },
+        "id": { "$ref": "#/$defs/id" },
+        "inkRevision": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "pong": {
+      "type": "object",
+      "required": ["t", "ms"],
+      "properties": { "t": { "const": "pong" }, "ms": { "type": "number" } }
     },
     "strokeSnapshot": {
       "type": "object",
       "required": ["id", "color", "size", "pts", "ignorePressure"],
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+        "color": { "$ref": "#/$defs/color" },
         "size": { "type": "number", "exclusiveMinimum": 0 },
-        "pts": {
-          "type": "array",
-          "items": { "type": "number" }
-        },
+        "pts": { "type": "array", "items": { "type": "number" } },
         "ignorePressure": { "type": "boolean" }
+      }
+    },
+    "strokesRemoved": {
+      "type": "object",
+      "required": ["t", "ids"],
+      "properties": {
+        "t": { "const": "strokesRemoved" },
+        "ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "strokesAdded": {
+      "type": "object",
+      "required": ["t", "strokes"],
+      "properties": {
+        "t": { "const": "strokesAdded" },
+        "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeSnapshot" } }
+      }
+    },
+    "cleared": {
+      "type": "object",
+      "required": ["t"],
+      "properties": { "t": { "const": "cleared" } }
+    },
+    "captured": {
+      "type": "object",
+      "required": ["t", "id"],
+      "properties": { "t": { "const": "captured" }, "id": { "type": "string", "minLength": 1 } }
+    },
+    "captureFailed": {
+      "type": "object",
+      "required": ["t", "message"],
+      "properties": { "t": { "const": "captureFailed" }, "message": { "type": "string" } }
+    },
+    "libraryChanged": {
+      "description": "Captures were added or removed on the host. Sent only to devices with library access.",
+      "type": "object",
+      "required": ["t"],
+      "properties": { "t": { "const": "libraryChanged" } }
+    },
+    "libraryItemChanged": {
+      "type": "object",
+      "required": ["t", "id", "rev"],
+      "properties": {
+        "t": { "const": "libraryItemChanged" },
+        "id": { "type": "string" },
+        "rev": { "type": "string" }
+      }
+    },
+    "peerStrokeBegin": {
+      "type": "object",
+      "required": ["t", "author", "id", "color", "size", "x", "y", "p"],
+      "properties": {
+        "t": { "const": "peerStrokeBegin" },
+        "author": { "type": "string" },
+        "id": { "$ref": "#/$defs/id" },
+        "color": { "$ref": "#/$defs/color" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "p": { "type": "number" }
+      }
+    },
+    "peerStrokePoints": {
+      "type": "object",
+      "required": ["t", "author", "id", "pts"],
+      "properties": {
+        "t": { "const": "peerStrokePoints" },
+        "author": { "type": "string" },
+        "id": { "$ref": "#/$defs/id" },
+        "pts": { "$ref": "#/$defs/points3" }
+      }
+    },
+    "peerStrokeEnd": {
+      "type": "object",
+      "required": ["t", "author", "id"],
+      "properties": {
+        "t": { "const": "peerStrokeEnd" },
+        "author": { "type": "string" },
+        "id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "peerStrokeCancel": {
+      "type": "object",
+      "required": ["t", "author", "id"],
+      "properties": {
+        "t": { "const": "peerStrokeCancel" },
+        "author": { "type": "string" },
+        "id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "peerShapePreview": {
+      "type": "object",
+      "required": ["t", "author", "id", "tool", "x1", "y1", "x2", "y2", "color", "size"],
+      "properties": {
+        "t": { "const": "peerShapePreview" },
+        "author": { "type": "string" },
+        "id": { "$ref": "#/$defs/id" },
+        "tool": { "$ref": "#/$defs/shapeTool" },
+        "x1": { "type": "number" },
+        "y1": { "type": "number" },
+        "x2": { "type": "number" },
+        "y2": { "type": "number" },
+        "color": { "$ref": "#/$defs/color" },
+        "size": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "peerShapeCommit": {
+      "type": "object",
+      "required": ["t", "author", "id", "tool", "x1", "y1", "x2", "y2", "color", "size"],
+      "properties": {
+        "t": { "const": "peerShapeCommit" },
+        "author": { "type": "string" },
+        "id": { "$ref": "#/$defs/id" },
+        "tool": { "$ref": "#/$defs/shapeTool" },
+        "x1": { "type": "number" },
+        "y1": { "type": "number" },
+        "x2": { "type": "number" },
+        "y2": { "type": "number" },
+        "color": { "$ref": "#/$defs/color" },
+        "size": { "type": "number", "exclusiveMinimum": 0 }
       }
     }
   }

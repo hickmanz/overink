@@ -338,10 +338,9 @@ final class RemoteHost {
         }
         let live = displays
         let remote = settings.value.remote
-        let maxEdge = remote.maxEdge > 0
-            ? remote.maxEdge
-            : (remote.streamTarget == .allDisplays ? RemoteStreamEstimator.autoAllDisplaysMaxEdge : 7680)
-        guard let plan = StreamPlan.make(rect: streamRect(), displays: live.map(\.stream), maxEdge: maxEdge) else {
+        let rect = streamRect()
+        let maxEdge = RemoteStreamEstimator.effectiveMaxEdge(settings: remote, stream: rect, displays: live.map(\.stream))
+        guard let plan = StreamPlan.make(rect: rect, displays: live.map(\.stream), maxEdge: maxEdge) else {
             streamer.apply(nil, displayIDs: [:])
             return
         }
@@ -394,6 +393,68 @@ final class RemoteHost {
         }
     }
 
+    // MARK: Pairing
+
+    private static let loopbackDeviceID = "this-mac-"
+    private var pairToken: String?
+    /// Which paired device (or guest) each connection belongs to, so forgetting a device ends its session.
+    private var deviceByClient: [String: String] = [:]
+    private var guestClients: Set<String> = []
+
+    /// Every interface an iPad could plausibly use, best first.
+    func availableAdapters(includeAll: Bool = false) -> [LanAdapter] {
+        LanAdapters.sorted(SystemLanAdapters.current(), includeAll: includeAll)
+    }
+
+    /// The interface the QR code advertises: the remembered choice, else the best one.
+    func chosenAdapter() -> LanAdapter? {
+        LanAdapters.choose(from: SystemLanAdapters.current(), preferredId: settings.value.remote.adapterId)
+    }
+
+    /// Replaces the one-time pairing code. Call when the pairing window opens or the code was used.
+    @discardableResult
+    func refreshPairCode() -> String {
+        let token = pairing.createPairToken()
+        pairToken = token
+        return token
+    }
+
+    /// The link the QR code carries: it pairs the scanning device for good.
+    func pairingURL() -> String? {
+        guard case .running(let port) = status, let adapter = chosenAdapter() else { return nil }
+        return RemotePairingURL.make(
+            host: adapter.address, port: port,
+            joinToken: pairing.sessionJoinToken, pairToken: pairToken ?? refreshPairCode()
+        )
+    }
+
+    /// A link for a guest: draws on this session (with approval, if required) but cannot see the library.
+    func guestURL() -> String? {
+        guard case .running(let port) = status, let adapter = chosenAdapter() else { return nil }
+        return RemotePairingURL.make(
+            host: adapter.address, port: port, joinToken: pairing.sessionJoinToken, pairToken: nil
+        )
+    }
+
+    /// Invalidates the guest link and disconnects guests who joined with it.
+    func resetGuestLink() {
+        _ = pairing.rotateSessionJoinToken()
+        for client in guestClients { server.kick(client) }
+        onStatusChange?()
+    }
+
+    func forgetDevice(_ id: String) {
+        pairing.revoke(id: id)
+        for (client, device) in deviceByClient where device == id { server.kick(client) }
+        onClientsChange?()
+    }
+
+    func forgetAllDevices() {
+        pairing.revokeAll()
+        for client in deviceByClient.keys { server.kick(client) }
+        onClientsChange?()
+    }
+
     // MARK: Admission
 
     private func admit(_ hello: RemoteHello, peer: String, connectionID: String) async -> RemoteHelloResult {
@@ -418,16 +479,21 @@ final class RemoteHost {
         } else if pairing.validateJoinToken(hello.join) {
             needsApproval = settings.value.remote.requireJoinApproval
         } else if RemoteNetwork.isLoopback(peer) {
-            // The Mac's own browser (testing, or the same machine) is trusted.
-            let issued = pairing.issueDeviceKey(deviceName: name, canUseLibrary: true)
-            issuedKey = issued.key
-            libraryDeviceID = issued.device.id
+            // A browser on this Mac is trusted for the connection. Nothing is remembered, so tests and
+            // local tabs do not pile up in the paired devices list.
+            libraryDeviceID = Self.loopbackDeviceID + connectionID
         } else {
             return .reject(RemoteError(code: RemoteErrorCode.badToken.rawValue, message: "This device is not paired. Scan the QR code on the Mac."))
         }
 
         if needsApproval, !(await askApproval(for: name)) {
             return .reject(RemoteError(code: RemoteErrorCode.denied.rawValue, message: "The host declined the request."))
+        }
+
+        if let libraryDeviceID {
+            deviceByClient[connectionID] = libraryDeviceID
+        } else if issuedKey == nil, pairing.findByDeviceKey(hello.deviceKey) == nil {
+            guestClients.insert(connectionID)
         }
 
         let libToken: String? = {
@@ -474,6 +540,8 @@ final class RemoteHost {
     }
 
     private func clientRemoved(_ id: String) {
+        deviceByClient[id] = nil
+        guestClients.remove(id)
         libraryTokens.revoke(clientID: id)
         for (key, owner) in live where owner.clientID == id { cancelLive(key, broadcast: true) }
     }

@@ -31,6 +31,10 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_overink._tcp</string>
+    </array>
     <key>NSLocalNetworkUsageDescription</key>
     <string>OverInk uses your local network to stream your Mac screen and receive drawing input from paired devices.</string>
     <key>NSScreenCaptureUsageDescription</key>
