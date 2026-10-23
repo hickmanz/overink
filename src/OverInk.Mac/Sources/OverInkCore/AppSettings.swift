@@ -51,6 +51,9 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
     /// Remote sketching from an iPad (server, streaming, pairing).
     public var remote = RemoteSettings()
 
+    /// Update channel and the "Not now" reminder count.
+    public var updates = UpdateSettings()
+
     public init() {}
 
     public var captureBehavior: MacCaptureBehavior {
@@ -75,7 +78,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         case drawHotkey
         case toolbarVertical, compactTools, customColors, hideToolbarWhenNotDrawing
         case captureMode, captureHotkey, includeToolbarInCaptures, openEditorAfterCapture
-        case libraryFolder, hasCompletedOnboarding, remote
+        case libraryFolder, hasCompletedOnboarding, remote, updates
     }
 
     public init(from decoder: Decoder) throws {
@@ -110,6 +113,7 @@ public struct MacAppSettings: Codable, Equatable, Sendable {
         hasCompletedOnboarding = try c.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding)
             ?? d.hasCompletedOnboarding
         remote = (try? c.decodeIfPresent(RemoteSettings.self, forKey: .remote)) ?? d.remote
+        updates = (try? c.decodeIfPresent(UpdateSettings.self, forKey: .updates)) ?? d.updates
     }
 }
 

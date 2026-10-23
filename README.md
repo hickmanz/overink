@@ -26,7 +26,7 @@ For a development `.app` with a stable identity for Screen Recording permissions
 ./scripts/run-mac-dev.sh
 ```
 
-Creating a production-signed `.app` still requires full Xcode. See `src/OverInk.Mac/README.md` for current status.
+Release packaging (Developer ID signing, notarization, DMG and Sparkle updates) is in `scripts/package-mac.sh`. See the macOS port section below and `src/OverInk.Mac/README.md`.
 
 ### macOS port: status and next steps
 
@@ -40,7 +40,7 @@ Work is tracked on the `mac-app` branch, in phases toward feature parity with Wi
 | 3 | Editor and library: shapes, Select tool, zoom, grid/strip, rename, reorder, autosave | Done |
 | 4 | Settings window, launch at login, onboarding, single instance, `overink://` URLs | Done |
 | 5 | Remote (iPad) sketching | Done; needs a first test on a real iPad |
-| 6 | Distribution: signing, notarization, DMG, Sparkle updates | Not started |
+| 6 | Distribution: signing, notarization, DMG, Sparkle updates | Built; needs your Apple and Sparkle credentials to run for real |
 
 **Phase 5 (remote): what is done**
 
@@ -61,7 +61,25 @@ Work is tracked on the `mac-app` branch, in phases toward feature parity with Wi
 
 Known gaps: ink that crosses displays is stored on the display where the stroke starts (not split); a remote save to a capture that is open in the Mac editor is picked up only when the editor reloads it.
 
-**Phase 6 (distribution)**: Developer ID signing and notarization, a DMG, a macOS job in `.github/workflows/release.yml`, and Sparkle 2 with a beta channel, a "Not now" limit of 3 and a "Check now" button. This needs full Xcode and signing credentials.
+**Phase 6 (distribution): what is done**
+
+- `scripts/package-mac.sh --version X [--universal]` builds `OverInk.app` (version, build number, feed URL and update key stamped into `Info.plist`, the icon, the iPad web client and `Sparkle.framework` inside), signs it inside-out with the hardened runtime, notarizes and staples the app, then makes, signs, notarizes and staples `OverInk-X-mac.dmg` and `SHA256SUMS-mac.txt`. With no credentials it makes an ad-hoc app and DMG that run on the same Mac, which is how CI checks the bundle builds.
+- Sparkle 2 (Swift package dependency, only in the app target). `UpdateController` starts it only when the bundle has an HTTPS `SUFeedURL` and a `SUPublicEDKey` and is not the `.dev` bundle. It checks quietly 3 seconds after launch and daily, has a **Check for Updates…** menu item and a **Check now** button in Settings, a **Beta updates** switch (beta items carry `<sparkle:channel>beta</sparkle:channel>`), and stops showing the automatic prompt after "Not now" has been chosen 3 times for the same release (a newer release, or Check now, starts over). The counting rules live in `OverInkCore` (`UpdateSettings`) with tests, and match `UpdateReminder` on Windows. Sparkle's own button reads "Remind Me Later" rather than "Not now".
+- The feed is `appcast.xml` on a rolling release named `mac-appcast` (`https://github.com/hickmanz/overink/releases/download/mac-appcast/appcast.xml`). `scripts/mac-appcast.sh` signs the DMG with Sparkle's `sign_update` and `scripts/mac_release.py` adds the item (newest first, last 40 kept). Sparkle compares dotted numbers, so the build number is `X.Y.Z.<n>`: `<n>` is the beta number for `-beta.N` tags and 10000 for a stable release, so `0.3.0-beta.2` < `0.3.0-beta.10` < `0.3.0`. The script's tests are in `scripts/test_mac_release.py`.
+- `.github/workflows/release.yml` now has three jobs: `windows` (as before, minus publishing), `mac` (tests, signing, notarization, appcast), and `publish` (one GitHub release with the Windows and Mac files, then the appcast upload). If the Apple secrets are missing, the Mac build is still made as a workflow artifact but is not attached to the release, so Windows releases keep working. CI also runs the script tests and an ad-hoc `package-mac.sh --universal` on every push.
+
+**Phase 6: what you need to do once (none of this can be done from the repo)**
+
+1. **Developer ID certificate.** In your Apple Developer account create a "Developer ID Application" certificate, export it from Keychain Access as a `.p12`, then run `base64 -i cert.p12 | pbcopy`.
+2. **Repository secrets** (Settings → Secrets and variables → Actions):
+   - `MACOS_CERTIFICATE_P12` (the base64 text) and `MACOS_CERTIFICATE_PASSWORD`
+   - `MACOS_SIGN_IDENTITY`, for example `Developer ID Application: Your Name (TEAMID)` (see it with `security find-identity -v -p codesigning`)
+   - `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`, and `NOTARY_PASSWORD` (an app-specific password from appleid.apple.com)
+3. **Update signing key.** Run `src/OverInk.Mac/.build/artifacts/sparkle/Sparkle/bin/generate_keys` (after one `swift build`). It stores the private key in your login Keychain and prints the public key. Add the public key as the repository **variable** `SPARKLE_PUBLIC_ED_KEY`. Export the private key with `generate_keys -x sparkle-private.key`, add its contents as the secret `SPARKLE_ED_PRIVATE_KEY`, and keep a copy somewhere safe: if you lose it, installed apps can never be updated.
+4. **Try it** with a beta tag (`git tag v0.3.0-beta.1 && git push origin v0.3.0-beta.1`), install the DMG, then tag `v0.3.0-beta.2` and use Check now with Beta updates on. Also run `spctl --assess --type execute --verbose OverInk.app` on the installed app: it should say "Notarized Developer ID".
+5. To build a DMG locally: `scripts/package-mac.sh --version 0.3.0 --universal` (set `MACOS_SIGN_IDENTITY`, `NOTARY_PROFILE` and `SPARKLE_PUBLIC_ED_KEY` for a real one).
+
+Not verified (needs the credentials above): hardened-runtime signing, notarization and stapling, the Keychain-backed paired-device store on a Team-signed build, and an actual Sparkle update from one release to the next. The ad-hoc package was checked: it launches, serves the iPad page, and its appcast item and signature verify with Sparkle's tool.
 
 Notes for whoever continues:
 
@@ -86,6 +104,8 @@ git push origin v0.2.0
 - `OverInk-Setup-<version>.exe` – installer (Inno Setup, per-user, no admin needed)
 - `OverInk-<version>-win-x64.zip` – portable build
 - `SHA256SUMS.txt`
+
+When the macOS signing secrets are set, the same release also gets `OverInk-<version>-mac.dmg` and `SHA256SUMS-mac.txt`, and the Sparkle appcast is refreshed (see the macOS port section for the one-time setup).
 
 Tags containing a hyphen (for example `v0.3.0-beta.1`) are marked as pre-releases. You can also run the workflow manually from the Actions tab to build the artifacts without publishing.
 

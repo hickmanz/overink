@@ -31,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var modeMenuItem: NSMenuItem?
     private var showedScreenPermissionHelp = false
-    private lazy var settingsController = SettingsWindowController(settings: settings)
+    private lazy var updateController = UpdateController(settings: settings)
+    private lazy var settingsController = SettingsWindowController(settings: settings, updates: updateController)
     private lazy var onboardingController = OnboardingWindowController(settings: settings) { [weak self] in
         self?.openSettings()
     }
@@ -59,6 +60,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSApplication.shared.terminate(nil)
             }
         }
+        if let index = arguments.firstIndex(of: "--snapshot-settings"), arguments.indices.contains(index + 1) {
+            let url = URL(fileURLWithPath: arguments[index + 1])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.settingsController.writeSnapshot(to: url)
+                NSApplication.shared.terminate(nil)
+            }
+        }
         if arguments.contains("--welcome") {
             onboardingController.show()
         }
@@ -68,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var isDevelopmentLaunch: Bool {
-        CommandLine.arguments.contains { ["--library", "--open-editor", "--settings", "--welcome", "--remote", "--remote-window", "--snapshot-remote-window"].contains($0) }
+        CommandLine.arguments.contains { ["--library", "--open-editor", "--settings", "--welcome", "--remote", "--remote-window", "--snapshot-remote-window", "--snapshot-settings"].contains($0) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -111,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             toolbarController?.show()
         }
         startRemoteHost()
+        updateController.start()
         var lastCaptureHotkey = settings.value.captureHotkey
         settings.observe { [weak self] in
             guard let self, self.settings.value.captureHotkey != lastCaptureHotkey else { return }
@@ -354,6 +363,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+        updatesItem.target = self
+        menu.addItem(updatesItem)
+
         let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
         loginItem.target = self
         menu.addItem(loginItem)
@@ -455,6 +468,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettingsFromMenu() {
         openSettings()
+    }
+
+    @objc private func checkForUpdatesFromMenu() {
+        updateController.checkNow()
     }
 
     @objc private func toggleLoginItem() {

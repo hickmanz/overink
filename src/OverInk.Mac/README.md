@@ -38,13 +38,14 @@ Native Swift/AppKit implementation of OverInk.
   - Remote ink on the overlay: live strokes, shapes, partial erase, per-author undo/redo, clear, a roster and hover cursors, with ink revisions stamped on each frame so the iPad can drop its local copy at the right moment
   - Remote library: browse, thumbnails, the original image, ink read and write (409 on a stale revision), duplicate, delete, capture from the iPad, and change notifications when files change on the Mac
   - `shared/protocol/remote-v1.schema.json` describes every message; `RemoteSchemaConformanceTests` checks the host's output, the decoder and the shipped web client against it
+- Updates with Sparkle 2: Check for Updates… in the menu, Check now and a Beta updates switch in Settings, quiet checks at launch and daily, and "Not now" stops the automatic prompt after three times for a release (installed, signed builds only)
 - Platform-neutral Swift models for geometry, ink, and remote protocol v1
 
 Capture documents are `CaptureDocument` version 2 (adds stroke `groupId`); version 1 files still open. The Mac format is independent of the Windows ISF-based library.
 
 ## Development launch arguments
 
-`OverInkMac --library`, `--settings`, `--welcome` and `--remote-window` open those windows on launch, and `OverInkMac --open-editor <capture.png>` opens a capture in the editor. `--remote` runs the iPad remote server for this launch even when it is off in settings. `--snapshot-remote-window <png>` writes the Remote window to a file and quits (for layout checks without a screen). All of these skip the single-instance check.
+`OverInkMac --library`, `--settings`, `--welcome` and `--remote-window` open those windows on launch, and `OverInkMac --open-editor <capture.png>` opens a capture in the editor. `--remote` runs the iPad remote server for this launch even when it is off in settings. `--snapshot-remote-window <png>` and `--snapshot-settings <png>` write that window to a file and quit (for layout checks without a screen). All of these skip the single-instance check.
 
 `scripts/run-mac-dev.sh` passes its arguments to the app, for example `./scripts/run-mac-dev.sh --remote`.
 
@@ -66,7 +67,9 @@ swift test
 swift run OverInkMac
 ```
 
-`swift run` is useful for development, but it does not create a signed application bundle. Production packaging requires full Xcode, an app target with privacy usage descriptions and entitlements, a Developer ID certificate, and notarization.
+`swift run` is useful for development, but it does not create an application bundle (so no updater, login item or `overink://` links). SwiftPM downloads Sparkle on first build; if `swift package resolve` hangs on a Keychain prompt, add `--disable-keychain`.
+
+To make a distributable app and DMG, run `scripts/package-mac.sh --version 0.3.0 [--universal]` from the repository root. Without credentials it is ad-hoc signed; for a Developer ID signed and notarized build see the macOS port section in the top-level `README.md`. `swift scripts/make-mac-icon.swift` regenerates `Supporting/AppIcon.icns` from the Windows artwork.
 
 The app starts in pass-through mode. Use the menu-bar pencil or `Control-Shift-D` to enter drawing mode. Press `Escape` at any time to leave drawing mode.
 

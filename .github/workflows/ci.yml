@@ -41,3 +41,10 @@ jobs:
 
       - name: Protocol and format checks
         run: swift run -c release OverInkCoreChecks
+
+      - name: Release script tests
+        run: python3 -m unittest discover -s ../../scripts -p "test_*.py"
+
+      - name: Package (ad-hoc, to check the bundle builds)
+        working-directory: .
+        run: ./scripts/package-mac.sh --version 0.0.0-ci.${{ github.run_number }} --universal

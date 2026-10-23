@@ -101,16 +101,19 @@ final class ClosureButton: NSButton {
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let settings: SettingsModel
+    private let updates: UpdateController
     private var window: NSWindow?
     private var refreshers: [() -> Void] = []
 
     private let width: CGFloat = 560
     private let labelWidth: CGFloat = 150
 
-    init(settings: SettingsModel) {
+    init(settings: SettingsModel, updates: UpdateController) {
         self.settings = settings
+        self.updates = updates
         super.init()
         settings.observe { [weak self] in self?.refresh() }
+        updates.observeChecks { [weak self] in self?.refresh() }
     }
 
     func show() {
@@ -122,6 +125,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func refresh() {
         refreshers.forEach { $0() }
+    }
+
+    /// Development aid (`--snapshot-settings <png>`): renders the window to a file without needing a screen.
+    func writeSnapshot(to url: URL) {
+        show()
+        guard let view = window?.contentView else { return }
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -172,6 +185,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         addHeader("Permissions", to: stack)
         addScreenPermission(to: stack)
+
+        addHeader("Updates", to: stack)
+        addUpdates(to: stack)
 
         WindowChrome.install(stack, in: window, root: WindowChrome.background(), width: width)
         window.center()
@@ -347,6 +363,35 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                 : { if !ScreenPermission.request() { ScreenPermission.openSystemSettings() } }
         }
         row("Screen capture", control: line, note: "Needed for captures. macOS may ask you to relaunch OverInk after you allow it.", in: stack)
+    }
+
+    private func addUpdates(to stack: NSStackView) {
+        let version = WindowChrome.label(updates.currentVersion.map { "OverInk \($0)" } ?? "Development build")
+        row("Version", control: version, in: stack)
+
+        addCheckbox("Include beta updates", to: stack, get: { $0.updates.includeBeta }) { $0.updates.includeBeta = $1 }
+        let betaNote = WindowChrome.label("Offers pre-release builds, which can be less stable.", size: 11, secondary: true)
+        betaNote.preferredMaxLayoutWidth = width - 48 - labelWidth - 12
+        let indent = NSStackView(views: [NSView(), betaNote])
+        indent.orientation = .horizontal
+        indent.spacing = 12
+        indent.arrangedSubviews[0].widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
+        stack.addArrangedSubview(indent)
+
+        let status = WindowChrome.label("", size: 12, secondary: true)
+        status.preferredMaxLayoutWidth = 260
+        let check = ClosureButton(title: "Check now")
+        check.onPress = { [weak self] in self?.updates.checkNow() }
+        let line = NSStackView(views: [check, status])
+        line.orientation = .horizontal
+        line.alignment = .firstBaseline
+        line.spacing = 12
+        refreshers.append { [weak self, weak status, weak check] in
+            guard let self else { return }
+            status?.stringValue = self.updates.statusText
+            check?.isEnabled = self.updates.canCheckNow
+        }
+        row("Check for updates", control: line, in: stack)
     }
 
     private func showError(_ title: String, _ detail: String) {

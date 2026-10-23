@@ -3,6 +3,18 @@ name: Release
 # Push a version tag to publish a release:
 #   git tag v0.2.0 && git push origin v0.2.0
 # Run it manually (Actions tab) to build the artifacts without publishing a release.
+#
+# Jobs: windows (installer + zip), mac (signed, notarized DMG) and publish (one GitHub release with
+# everything, plus the Sparkle appcast on the rolling "mac-appcast" release).
+#
+# macOS signing needs these repository secrets (without them the mac job still builds an ad-hoc DMG as a
+# workflow artifact, but it is not attached to the release):
+#   MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD   Developer ID Application certificate (.p12, base64)
+#   MACOS_SIGN_IDENTITY                                  e.g. "Developer ID Application: Name (TEAMID)"
+#   NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_PASSWORD     Apple ID, team and app-specific password
+#   SPARKLE_ED_PRIVATE_KEY                               update signing key (generate_keys -x)
+# and this repository variable:
+#   SPARKLE_PUBLIC_ED_KEY                                the matching public key (generate_keys -p)
 on:
   push:
     tags: ["v*"]
@@ -12,8 +24,10 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,18 +71,135 @@ jobs:
             artifacts/SHA256SUMS.txt
           if-no-files-found: error
 
-      - name: Publish GitHub release
-        if: github.ref_type == 'tag'
-        shell: pwsh
+  mac:
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signed: ${{ steps.package.outputs.signed }}
+    env:
+      SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-dev.${{ github.run_number }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version (build $(python3 scripts/mac_release.py build-number "$version"))"
+
+      - name: Test
+        run: |
+          swift test
+          swift run -c release OverInkCoreChecks
+          python3 -m unittest discover -s ../../scripts -p "test_*.py"
+        working-directory: src/OverInk.Mac
+
+      - name: Import the signing certificate
+        id: certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE_P12" ]; then
+            echo "No signing certificate configured; the DMG will be ad-hoc signed."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build, sign and notarize
+        id: package
+        env:
+          MACOS_SIGN_IDENTITY: ${{ steps.certificate.outputs.available == 'true' && secrets.MACOS_SIGN_IDENTITY || '' }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          ./scripts/package-mac.sh --version "${{ steps.version.outputs.version }}" --universal
+          if [ -n "$MACOS_SIGN_IDENTITY" ] && [ -n "$NOTARY_APPLE_ID" ] && [ -n "$SPARKLE_PUBLIC_ED_KEY" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::The macOS build is not signed, notarized and update-enabled, so it will not be attached to the release. Check the MACOS_*, NOTARY_* secrets and the SPARKLE_PUBLIC_ED_KEY variable."
+          fi
+
+      - name: Sign the update and write the appcast
+        if: github.ref_type == 'tag' && steps.package.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          $ghArgs = @("release", "create", "${{ github.ref_name }}",
-            "--title", "OverInk ${{ steps.version.outputs.version }}",
-            "--generate-notes")
-          if ("${{ steps.version.outputs.version }}" -match "-") { $ghArgs += "--prerelease" }
-          $ghArgs += (Get-ChildItem artifacts -File |
-            Where-Object { $_.Extension -in ".zip", ".exe", ".txt" } |
-            ForEach-Object { $_.FullName })
-          gh @ghArgs
-          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+          mkdir -p previous
+          gh release download mac-appcast --pattern appcast.xml --dir previous || echo "No earlier appcast; starting a new one."
+          ./scripts/mac-appcast.sh \
+            --dmg "artifacts/mac/OverInk-${{ steps.version.outputs.version }}-mac.dmg" \
+            --version "${{ steps.version.outputs.version }}" \
+            --tag "${{ github.ref_name }}" \
+            --previous previous/appcast.xml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OverInk-${{ steps.version.outputs.version }}-mac
+          path: |
+            artifacts/mac/*.dmg
+            artifacts/mac/SHA256SUMS-mac.txt
+            artifacts/mac/appcast.xml
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: OverInk-${{ needs.windows.outputs.version }}
+          path: release
+
+      - uses: actions/download-artifact@v4
+        if: needs.mac.outputs.signed == 'true'
+        with:
+          name: OverInk-${{ needs.mac.outputs.version }}-mac
+          path: mac
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="${{ needs.windows.outputs.version }}"
+          assets=(release/*.zip release/*.exe release/SHA256SUMS.txt)
+          if [ -d mac ]; then
+            assets+=(mac/*.dmg mac/SHA256SUMS-mac.txt)
+          fi
+          flags=(--title "OverInk $version" --generate-notes)
+          case "$version" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "${{ github.ref_name }}" "${flags[@]}" "${assets[@]}"
+
+      - name: Publish the macOS update feed
+        if: needs.mac.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # A rolling pre-release that only holds appcast.xml. It has no installer, so the Windows updater ignores it.
+          gh release view mac-appcast > /dev/null 2>&1 || gh release create mac-appcast \
+            --title "macOS update feed" --prerelease --latest=false \
+            --notes "Rolling release that holds appcast.xml for the macOS app's Sparkle updates. Do not delete it."
+          gh release upload mac-appcast mac/appcast.xml --clobber

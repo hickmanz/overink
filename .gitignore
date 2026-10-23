@@ -13,3 +13,4 @@ TestResults/
 appsettings.local.json
 .cursor/
 artifacts/
+__pycache__/
