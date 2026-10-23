@@ -8,6 +8,14 @@
         Topmost="True"
         ShowInTaskbar="True"
         Background="#FF101012">
+    <Border BorderBrush="{StaticResource GlassRimBrush}" BorderThickness="1" Margin="-1">
+    <Border.Background>
+        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#FF2A2A33" Offset="0" />
+            <GradientStop Color="#FF1A1A20" Offset="0.5" />
+            <GradientStop Color="#FF121216" Offset="1" />
+        </LinearGradientBrush>
+    </Border.Background>
     <StackPanel Margin="22,18,22,18" Width="380">
         <TextBlock x:Name="MessageText" TextWrapping="Wrap" Foreground="{StaticResource TextBrush}" FontSize="13" LineHeight="20" />
         <StackPanel x:Name="NotesPanel" Margin="0,14,0,0" Visibility="Collapsed">
@@ -23,4 +31,5 @@
                     Style="{StaticResource PrimaryButton}" />
         </StackPanel>
     </StackPanel>
+    </Border>
 </Window>

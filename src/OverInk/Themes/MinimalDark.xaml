@@ -17,22 +17,54 @@
     <SolidColorBrush x:Key="WellBrush" Color="{StaticResource WellColor}" />
     <SolidColorBrush x:Key="BorderBrushMuted" Color="#28FFFFFF" />
 
+    <!-- Liquid glass: translucent tint, lighter at the top, with a specular sheen band -->
+    <SolidColorBrush x:Key="GlassFillBrush" Color="#1A000000" />
+
+    <!-- Rim light: a faint, mostly transparent edge, a little brighter on the top-left -->
+    <LinearGradientBrush x:Key="GlassRimBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#2CFFFFFF" Offset="0" />
+        <GradientStop Color="#14FFFFFF" Offset="0.4" />
+        <GradientStop Color="#0CFFFFFF" Offset="0.7" />
+        <GradientStop Color="#18FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+
+    <!-- Selected control: luminous accent glass -->
+    <LinearGradientBrush x:Key="GlassAccentBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FF6FA4FF" Offset="0" />
+        <GradientStop Color="#FF4C8DFF" Offset="0.55" />
+        <GradientStop Color="#FF3C74E0" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="GlassAccentRimBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#99FFFFFF" Offset="0" />
+        <GradientStop Color="#1FFFFFFF" Offset="0.6" />
+        <GradientStop Color="#40FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+    <!-- Hover / open: frosted white lift -->
+    <LinearGradientBrush x:Key="GlassHoverBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#2EFFFFFF" Offset="0" />
+        <GradientStop Color="#14FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="GlassHoverRimBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#40FFFFFF" Offset="0" />
+        <GradientStop Color="#10FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+
     <!-- Shadow on outer wrapper; inner shell clips content to rounded rect -->
     <Style x:Key="ToolbarShadowHost" TargetType="Border">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Padding" Value="2" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect BlurRadius="20" ShadowDepth="0" Opacity="0.5" Color="#000000" />
+                <DropShadowEffect BlurRadius="28" ShadowDepth="6" Direction="270" Opacity="0.45" Color="#000000" />
             </Setter.Value>
         </Setter>
     </Style>
 
     <Style x:Key="ToolbarShell" TargetType="Border">
-        <Setter Property="Background" Value="{StaticResource ShellBrush}" />
-        <Setter Property="BorderBrush" Value="{StaticResource BorderBrushMuted}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="20" />
+        <Setter Property="Background" Value="{StaticResource GlassFillBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource GlassRimBrush}" />
+        <Setter Property="BorderThickness" Value="1.25" />
+        <Setter Property="CornerRadius" Value="22" />
         <Setter Property="Padding" Value="7,6" />
         <Setter Property="ClipToBounds" Value="True" />
         <Setter Property="SnapsToDevicePixels" Value="True" />
@@ -41,7 +73,7 @@
     <Style x:Key="ToolbarDivider" TargetType="Border">
         <Setter Property="Width" Value="1" />
         <Setter Property="Height" Value="24" />
-        <Setter Property="Background" Value="#22FFFFFF" />
+        <Setter Property="Background" Value="#30FFFFFF" />
         <Setter Property="Margin" Value="8,0" />
         <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
@@ -428,16 +460,19 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="11">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="12"
+                            BorderBrush="Transparent" BorderThickness="1">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="#1AFFFFFF" />
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource GlassHoverBrush}" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource GlassHoverRimBrush}" />
                             <Setter Property="Foreground" Value="#FFFFFFFF" />
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{StaticResource AccentBrush}" />
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource GlassAccentBrush}" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource GlassAccentRimBrush}" />
                             <Setter Property="Foreground" Value="#FFFFFFFF" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -451,15 +486,18 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="11">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="12"
+                            BorderBrush="Transparent" BorderThickness="1">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="#1AFFFFFF" />
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource GlassHoverBrush}" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource GlassHoverRimBrush}" />
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="#26FFFFFF" />
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource GlassHoverBrush}" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource GlassHoverRimBrush}" />
                             <Setter Property="Foreground" Value="#FFFFFFFF" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -483,17 +521,19 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Root" CornerRadius="11" Padding="{TemplateBinding Padding}"
-                            Background="{TemplateBinding Background}">
+                    <Border x:Name="Root" CornerRadius="12" Padding="{TemplateBinding Padding}"
+                            Background="{StaticResource GlassHoverBrush}"
+                            BorderBrush="{StaticResource GlassHoverRimBrush}" BorderThickness="1">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="#2AFFFFFF" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource GlassRimBrush}" />
                             <Setter Property="Foreground" Value="#FFFFFFFF" />
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{StaticResource AccentBrush}" />
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource GlassAccentBrush}" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource GlassAccentRimBrush}" />
                             <Setter Property="Foreground" Value="#FFFFFFFF" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -534,15 +574,15 @@
 
     <!-- Floating popover card (shadow margin included) -->
     <Style x:Key="PopoverCard" TargetType="Border">
-        <Setter Property="Background" Value="#FF18181B" />
-        <Setter Property="BorderBrush" Value="#30FFFFFF" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="16" />
+        <Setter Property="Background" Value="#EC1E1E25" />
+        <Setter Property="BorderBrush" Value="{StaticResource GlassRimBrush}" />
+        <Setter Property="BorderThickness" Value="1.25" />
+        <Setter Property="CornerRadius" Value="20" />
         <Setter Property="Padding" Value="14" />
         <Setter Property="Margin" Value="14" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.5" Color="#000000" />
+                <DropShadowEffect BlurRadius="26" ShadowDepth="5" Direction="270" Opacity="0.45" Color="#000000" />
             </Setter.Value>
         </Setter>
     </Style>

@@ -8,14 +8,16 @@
         FontFamily="Segoe UI"
         WindowStyle="None"
         ResizeMode="NoResize"
-        AllowsTransparency="True"
+        AllowsTransparency="False"
         Background="Transparent"
         ShowInTaskbar="False"
         Topmost="True"
         PreviewKeyDown="Window_PreviewKeyDown"
         PreviewKeyUp="Window_PreviewKeyUp">
-    <Border Style="{StaticResource ToolbarShadowHost}" Margin="10">
-        <Border Style="{StaticResource ToolbarShell}">
+    <!-- The window itself carries the acrylic backdrop (see AcrylicBackdrop); no layered-window shadow host here -->
+    <Border>
+        <Border x:Name="ToolbarShellBorder" Style="{StaticResource ToolbarShell}" CornerRadius="16">
+            <Grid>
             <StackPanel x:Name="RootStack">
                 <StackPanel x:Name="DockRow" Orientation="Horizontal" VerticalAlignment="Top">
                     <StackPanel x:Name="BrandGroup" Orientation="Horizontal" VerticalAlignment="Center" Margin="2,0,4,0">
@@ -647,6 +649,7 @@
                     </StackPanel>
                 </Border>
             </StackPanel>
+            </Grid>
         </Border>
     </Border>
 </Window>

@@ -22,6 +22,7 @@ public partial class ToolbarWindow : Window
     private bool _recordingCaptureHotkey;
     private DateTime _capturePopupClosedAt = DateTime.MinValue;
     private bool _syncingSettingsUi;
+    private bool _acrylicActive;
     private bool _vertical;
     private Style? _dividerStyle;
     private SketchTool _lastShapeTool = SketchTool.Pen;
@@ -79,6 +80,19 @@ public partial class ToolbarWindow : Window
         // monitor with another scale, so the saved position is in pixels (older settings fall back to Left/Top).
         SourceInitialized += (_, _) =>
         {
+            // Real acrylic blur on Windows 11 22H2+; otherwise fall back to a solid dark shell.
+            _acrylicActive = AcrylicBackdrop.Apply(this, Color.FromArgb(0xB8, 0x0C, 0x0C, 0x10));
+            if (_acrylicActive)
+            {
+                // The blur is clipped by Windows' own rounding, so the shell's corner has to match it exactly.
+                ToolbarShellBorder.CornerRadius = new CornerRadius(AcrylicBackdrop.SystemCornerRadiusDips(this));
+            }
+            else
+            {
+                ToolbarShellBorder.Background = (System.Windows.Media.Brush)FindResource("ShellBrush");
+                ToolbarShellBorder.CornerRadius = new CornerRadius(0);
+            }
+
             var settings = _session.Settings.Current;
             if (settings.ToolbarPixelX is { } px && settings.ToolbarPixelY is { } py)
             {
@@ -95,6 +109,13 @@ public partial class ToolbarWindow : Window
         };
 
         SizeChanged += (_, _) => BoundsChanged?.Invoke(this, EventArgs.Empty);
+        DpiChanged += (_, _) =>
+        {
+            if (_acrylicActive)
+            {
+                ToolbarShellBorder.CornerRadius = new CornerRadius(AcrylicBackdrop.SystemCornerRadiusDips(this));
+            }
+        };
         Loaded += (_, _) =>
         {
             // A vertical layout restored at startup can leave the window wider than its content
