@@ -81,6 +81,24 @@ final class RemoteHost {
     private let overlay: OverlayController
     private let toolbarFrame: () -> NSRect?
 
+    private final class LibrarySnapshot: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: RemoteLibraryService.Settings
+        init(_ value: RemoteLibraryService.Settings) { stored = value }
+        var value: RemoteLibraryService.Settings {
+            get { lock.withLock { stored } }
+            set { lock.withLock { stored = newValue } }
+        }
+    }
+
+    let libraryTokens = LibraryTokenRegistry()
+    private lazy var librarySnapshot = LibrarySnapshot(currentLibrarySettings())
+    private lazy var library = RemoteLibraryService(tokens: libraryTokens) { [librarySnapshot] in
+        librarySnapshot.value
+    }
+    private var libraryWatcher: DirectoryWatcher?
+    private var watchedFolder: URL?
+
     private lazy var streamer = FrameStreamer(server: server)
     private var frameDemand = 0
 
@@ -147,6 +165,7 @@ final class RemoteHost {
                 switch result {
                 case .success(let bound):
                     self.status = .running(port: Int(bound))
+                    self.syncLibrary()
                 case .failure(let error):
                     self.status = .failed(Self.describe(error, port: port))
                 }
@@ -166,6 +185,10 @@ final class RemoteHost {
         for key in Array(live.keys) { cancelLive(key, broadcast: false) }
         streamer.apply(nil, displayIDs: [:])
         frameDemand = 0
+        libraryWatcher?.stop()
+        libraryWatcher = nil
+        watchedFolder = nil
+        libraryTokens.revokeAll()
         server.stop()
         status = .stopped
         lastBroadcastState = nil
@@ -209,6 +232,9 @@ final class RemoteHost {
         server.onClientRemoved = { [weak self] id in
             Task { @MainActor in self?.clientRemoved(id) }
         }
+        server.routeHandler = { [library] request, peer in
+            await library.handle(request, peer: peer)
+        }
         server.onStreamDemandChanged = { [weak self] count in
             Task { @MainActor in
                 guard let self else { return }
@@ -239,6 +265,7 @@ final class RemoteHost {
             self.server.maxClients = self.settings.value.remote.maxClients
             self.refreshStream()
             self.updateStreamer()
+            self.syncLibrary()
             self.scheduleStateBroadcast()
         }
         overlay.addModeObserver { [weak self] _ in self?.scheduleStateBroadcast() }
@@ -422,8 +449,6 @@ final class RemoteHost {
         let color = ParticipantColors.pick(used: server.usedColors())
         return .accept(RemoteAdmission(welcome: welcome, name: name, color: color, libToken: libToken))
     }
-
-    let libraryTokens = LibraryTokenRegistry()
 
     private static func cleanName(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -720,6 +745,52 @@ final class RemoteHost {
             )
             // Everyone, including the sender, hears the authoritative result through the ink diff.
             session.apply(result, on: display.id, author: clientID)
+        }
+    }
+
+    // MARK: Library
+
+    private func currentLibrarySettings() -> RemoteLibraryService.Settings {
+        RemoteLibraryService.Settings(
+            folder: CaptureLibrary.folder(forSetting: settings.value.libraryFolder),
+            enabled: settings.value.remote.libraryEnabled
+        )
+    }
+
+    /// Keeps the library service's view of the settings current and watches the folder for changes made on
+    /// the Mac, so open iPads refresh.
+    private func syncLibrary() {
+        let value = currentLibrarySettings()
+        librarySnapshot.value = value
+        guard isRunning, value.enabled else {
+            libraryWatcher?.stop()
+            libraryWatcher = nil
+            watchedFolder = nil
+            if !value.enabled { libraryTokens.revokeAll() }
+            return
+        }
+        guard watchedFolder != value.folder else { return }
+        libraryWatcher?.stop()
+        watchedFolder = value.folder
+        try? FileManager.default.createDirectory(at: value.folder, withIntermediateDirectories: true)
+        libraryWatcher = DirectoryWatcher(url: value.folder) { [weak self] in
+            self?.libraryFolderChanged()
+        }
+        Task { [library] in await library.resetBaseline() }
+    }
+
+    private func libraryFolderChanged() {
+        Task { @MainActor [weak self, library] in
+            let result = await library.scan()
+            guard let self, self.isRunning else { return }
+            if result.listChanged, let data = Optional(RemoteJSON.wrap("libraryChanged")) {
+                self.server.broadcast(data, libraryOnly: true)
+            }
+            for change in result.changed {
+                if let data = try? RemoteJSON.wrap("libraryItemChanged", payload: RemoteLibraryItemChanged(id: change.id, rev: change.rev)) {
+                    self.server.broadcast(data, libraryOnly: true)
+                }
+            }
         }
     }
 

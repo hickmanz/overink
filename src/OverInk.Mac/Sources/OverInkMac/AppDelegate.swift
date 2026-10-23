@@ -230,6 +230,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             toolbarFrame: { [weak self] in self?.toolbarController?.frame }
         )
         host.forceEnabled = CommandLine.arguments.contains("--remote")
+        host.captureToLibrary = { [weak self, weak host] in
+            guard let self, let host else { return .failure(CaptureEditorError.noDocument) }
+            do {
+                let rect = host.streamRect()
+                let url = try await self.captureCoordinator.capture(
+                    .region(CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)),
+                    copyToClipboard: false
+                )
+                return .success(url.deletingPathExtension().lastPathComponent)
+            } catch {
+                return .failure(error)
+            }
+        }
         remoteHost = host
         var lastRemote = settings.value.remote
         settings.observe { [weak self] in

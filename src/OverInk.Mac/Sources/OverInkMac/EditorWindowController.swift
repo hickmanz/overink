@@ -33,30 +33,6 @@ final class EditorWindow: NSWindow {
     }
 }
 
-/// Everything written when a capture is saved. Runs off the main thread.
-private struct SaveJob: Sendable {
-    let url: URL
-    let document: CaptureDocument
-    let flattened: CGImage
-    let promoteOriginal: Bool
-
-    func run() throws {
-        let manager = FileManager.default
-        let original = CapturePackagePaths.original(for: url)
-        // A plain PNG becomes editable by keeping its untouched pixels as the original. The
-        // original of an existing capture is never rewritten.
-        if promoteOriginal, !manager.fileExists(atPath: original.path), manager.fileExists(atPath: url.path) {
-            try manager.copyItem(at: url, to: original)
-        }
-        var document = document
-        document.upgradeToCurrentVersion()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(document).write(to: CapturePackagePaths.document(for: url), options: .atomic)
-        try CaptureRenderer.pngData(for: flattened).write(to: url, options: .atomic)
-    }
-}
-
 /// The editor and the capture library in one window: a canvas with the recent-captures strip below
 /// it, or the searchable grid of every capture.
 @MainActor
@@ -153,7 +129,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSSearchFieldDel
         // Make sure a save still in flight has finished before reading the file back.
         saveQueue.sync {}
         do {
-            let loaded = try Self.load(url)
+            let loaded = try CaptureStorage.load(url)
             currentURL = url
             originalImage = loaded.image
             promoteOriginal = loaded.promote
@@ -788,36 +764,6 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSSearchFieldDel
 
     // MARK: Loading and saving
 
-    private static func load(_ flattenedURL: URL) throws -> (image: CGImage, document: CaptureDocument, promote: Bool) {
-        let manager = FileManager.default
-        let originalURL = CapturePackagePaths.original(for: flattenedURL)
-        let hasOriginal = manager.fileExists(atPath: originalURL.path)
-        let sourceURL = hasOriginal ? originalURL : flattenedURL
-
-        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            throw CaptureEditorError.imageUnavailable
-        }
-
-        if hasOriginal,
-           let data = try? Data(contentsOf: CapturePackagePaths.document(for: flattenedURL)),
-           let document = try? JSONDecoder().decode(CaptureDocument.self, from: data) {
-            return (image, document, false)
-        }
-
-        // A plain PNG (or a capture whose sidecar is gone): canvas points follow the file's DPI.
-        var scale = 1.0
-        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let dpi = properties[kCGImagePropertyDPIWidth] as? Double, dpi > 0 {
-            scale = dpi / 72
-        }
-        let document = CaptureDocument(
-            canvasWidth: Double(image.width) / scale,
-            canvasHeight: Double(image.height) / scale
-        )
-        return (image, document, !hasOriginal)
-    }
-
     private func renderCurrent() throws -> CGImage {
         guard let originalImage, currentURL != nil else { throw CaptureEditorError.noDocument }
         return try CaptureRenderer.flattened(background: originalImage, document: canvas.document)
@@ -828,7 +774,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSSearchFieldDel
     private func saveIfNeeded(wait: Bool = false) {
         guard isDirty, let url = currentURL, originalImage != nil else { return }
         do {
-            let job = SaveJob(
+            let job = CaptureSaveJob(
                 url: url,
                 document: canvas.document,
                 flattened: try renderCurrent(),
@@ -846,7 +792,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSSearchFieldDel
         }
     }
 
-    nonisolated private static func run(_ job: SaveJob) {
+    nonisolated private static func run(_ job: CaptureSaveJob) {
         do {
             try job.run()
         } catch {

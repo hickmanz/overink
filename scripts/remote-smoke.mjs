@@ -88,8 +88,10 @@ try {
   check("loopback receives a device key", typeof a.welcome.deviceKey === "string");
   check("welcome state has tool", typeof a.welcome.state.tool === "string");
 
-  const roster = await b.next("roster", (m) => m.participants.length === 2);
-  check("roster lists both clients", roster.participants.length === 2);
+  // Other iPads or browser tabs may be connected too, so look for our two by id.
+  const ids = (m) => m.participants.map((p) => p.clientId);
+  const roster = await b.next("roster", (m) => ids(m).includes(a.welcome.clientId) && ids(m).includes(b.welcome.clientId));
+  check("roster lists both clients", ids(roster).includes(a.welcome.clientId) && ids(roster).includes(b.welcome.clientId));
 
   // A pen stroke: peers see it live, the author gets an ack.
   const stroke = uuid();
@@ -129,11 +131,13 @@ try {
   check("author undo restores the erased stroke", added.strokes.length >= 1);
 
   // Tool and colour changes are broadcast as state.
-  a.send({ t: "setColor", color: "#8E24AA" });
-  const state = await b.next("state", (m) => m.color === "#8E24AA");
-  check("setColor reaches other clients", state.color === "#8E24AA");
+  const original = a.welcome.state.color.toUpperCase();
+  const probe = original === "#8E24AA" ? "#00ACC1" : "#8E24AA";
+  a.send({ t: "setColor", color: probe });
+  const state = await b.next("state", (m) => m.color.toUpperCase() === probe);
+  check("setColor reaches other clients", state.color.toUpperCase() === probe);
 
-  a.send({ t: "setColor", color: a.welcome.state.color }); // put the user's colour back
+  a.send({ t: "setColor", color: original }); // put the user's colour back
 
   a.send({ t: "ping", ms: 5 });
   const pong = await a.next("pong");
@@ -150,6 +154,77 @@ try {
   a.send({ t: "clear" });
   await b.next("cleared");
   check("clear is broadcast", true);
+
+  // Library over HTTP. Makes its own capture (needs an awake screen) and deletes everything it creates.
+  const base = `http://${target}`;
+  const key = a.welcome.libToken;
+  check("loopback receives a library token", typeof key === "string" && key.length > 10);
+  check("library rejects a missing token", (await fetch(`${base}/lib`)).status === 401);
+  check("library rejects a wrong token", (await fetch(`${base}/lib?k=nope`)).status === 401);
+
+  a.send({ t: "capture" });
+  const outcome = await Promise.race([
+    a.next("captured", () => true, 15000).then((m) => ({ ok: true, m })),
+    a.next("captureFailed", () => true, 15000).then((m) => ({ ok: false, m })),
+  ]).catch((error) => ({ ok: false, m: { message: error.message } }));
+
+  if (!outcome.ok) {
+    console.log(`skip library tests: capture failed (${outcome.m.message})`);
+  } else {
+    const id = outcome.m.id;
+    const lib = (path, init) => fetch(`${base}${path}${path.includes("?") ? "&" : "?"}k=${encodeURIComponent(key)}`, init);
+    const listing = await (await lib("/lib")).json();
+    const item = listing.find((entry) => entry.id === id);
+    check("captured item is listed", !!item && item.w > 0 && item.h > 0 && typeof item.rev === "string");
+    check("capture made by the stream is editable", item?.editable === true);
+
+    const thumb = await lib(`/lib/${encodeURIComponent(id)}/thumb`);
+    check("thumbnail is a JPEG", thumb.status === 200 && thumb.headers.get("content-type") === "image/jpeg");
+    const originalRes = await lib(`/lib/${encodeURIComponent(id)}/original`);
+    const originalBytes = new Uint8Array(await originalRes.arrayBuffer());
+    check("original is a PNG", originalRes.status === 200 && originalBytes[1] === 0x50 && originalBytes[2] === 0x4e);
+
+    const doc = await (await lib(`/lib/${encodeURIComponent(id)}/strokes`)).json();
+    check("strokes reply has revision and size", doc.rev === item.rev && doc.w === item.w && doc.h === item.h);
+
+    const stroke = { color: "#1E88E5", size: 8, pts: [100, 100, 1, 220, 160, 1, 340, 120, 1], ignorePressure: false };
+    const saved = await lib(`/lib/${encodeURIComponent(id)}/strokes`, {
+      method: "POST",
+      body: JSON.stringify({ baseRev: doc.rev, strokes: [...doc.strokes, stroke], veil: 0.2 }),
+    });
+    const savedBody = await saved.json();
+    check("save with the current revision succeeds", saved.status === 200 && typeof savedBody.rev === "string" && savedBody.rev !== doc.rev);
+
+    const again = await lib(`/lib/${encodeURIComponent(id)}/strokes`, {
+      method: "POST",
+      body: JSON.stringify({ baseRev: doc.rev, strokes: [stroke] }),
+    });
+    const conflict = await again.json();
+    check("save with a stale revision is a 409 with the current revision", again.status === 409 && conflict.rev === savedBody.rev, `status ${again.status}, got ${JSON.stringify(conflict)}, saved ${savedBody.rev}`);
+
+    const reread = await (await lib(`/lib/${encodeURIComponent(id)}/strokes`)).json();
+    check("saved stroke and veil read back", reread.strokes.length === doc.strokes.length + 1 && Math.abs(reread.veil - 0.2) < 1e-6);
+    const back = reread.strokes[reread.strokes.length - 1];
+    check("stroke geometry survives the pixel/point conversion", Math.abs(back.pts[0] - 100) < 0.5 && Math.abs(back.pts[4] - 160) < 0.5 && Math.abs(back.size - 8) < 0.5);
+
+    const bad = await lib(`/lib/${encodeURIComponent(id)}/strokes`, {
+      method: "POST",
+      body: JSON.stringify({ baseRev: savedBody.rev, strokes: [{ color: "#000000", size: 1, pts: [1, 2], ignorePressure: false }] }),
+    });
+    check("invalid points are a 400", bad.status === 400);
+
+    const dup = await (await lib(`/lib/${encodeURIComponent(id)}/duplicate`, { method: "POST" })).json();
+    check("duplicate returns a new item", typeof dup.id === "string" && dup.id !== id);
+
+    const changed = a.next("libraryChanged", () => true, 4000).then(() => true, () => false);
+    await lib(`/lib/${encodeURIComponent(dup.id)}`, { method: "DELETE" });
+    await lib(`/lib/${encodeURIComponent(id)}`, { method: "DELETE" });
+    check("library change is pushed to the iPad", await changed);
+    const after = await (await lib("/lib")).json();
+    check("deleted items are gone", !after.some((entry) => entry.id === id || entry.id === dup.id));
+    check("unknown item is a 404", (await lib(`/lib/${encodeURIComponent(id)}/thumb`)).status === 404);
+    check("path traversal in an id finds nothing", (await lib(`/lib/..%2F..%2Fetc%2Fpasswd/original`)).status === 404);
+  }
 
   // Protocol hygiene.
   const bad = new Client("bad");
