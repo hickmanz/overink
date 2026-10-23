@@ -106,6 +106,9 @@ final class ToolbarController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel.isVisible }
 
+    /// The toolbar's frame in Cocoa screen coordinates (bottom-left origin).
+    var frame: NSRect { panel.frame }
+
     var windowID: CGWindowID {
         CGWindowID(panel.windowNumber)
     }

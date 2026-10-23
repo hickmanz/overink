@@ -13,6 +13,12 @@ final class OverlayController {
     let session = AnnotationSession()
     private(set) var mode: InteractionMode = .passThrough
     var modeDidChange: ((InteractionMode) -> Void)?
+    private var modeObservers: [(InteractionMode) -> Void] = []
+
+    /// Extra listeners for mode changes, in addition to `modeDidChange`.
+    func addModeObserver(_ observer: @escaping (InteractionMode) -> Void) {
+        modeObservers.append(observer)
+    }
     private lazy var drawShortcuts = DrawShortcuts(
         selectTool: { [weak self] tool in self?.session.tool = tool },
         undo: { [weak self] in self?.undo() },
@@ -53,6 +59,7 @@ final class OverlayController {
         }
         drawShortcuts.setEnabled(newMode == .draw)
         modeDidChange?(newMode)
+        modeObservers.forEach { $0(newMode) }
     }
 
     func clear() {
@@ -404,6 +411,9 @@ final class InkCanvasView: NSView {
                 respectFlipped: true,
                 hints: nil
             )
+        }
+        for stroke in session.liveStrokes(for: displayID) {
+            StrokeRenderer.draw(stroke, in: context)
         }
         if let activeStroke {
             StrokeRenderer.draw(activeStroke, in: context)

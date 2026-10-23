@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self?.openSettings()
     }
     private var loginItemMenuItem: NSMenuItem?
+    private var remoteHost: RemoteHost?
 
     /// Launch arguments for development: `--library`, `--settings`, `--welcome`, or `--open-editor <capture PNG>`.
     private func handleLaunchArguments() {
@@ -55,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var isDevelopmentLaunch: Bool {
-        CommandLine.arguments.contains { ["--library", "--open-editor", "--settings", "--welcome"].contains($0) }
+        CommandLine.arguments.contains { ["--library", "--open-editor", "--settings", "--welcome", "--remote"].contains($0) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -97,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !(settings.value.hideToolbarWhenNotDrawing) {
             toolbarController?.show()
         }
+        startRemoteHost()
         var lastCaptureHotkey = settings.value.captureHotkey
         settings.observe { [weak self] in
             guard let self, self.settings.value.captureHotkey != lastCaptureHotkey else { return }
@@ -218,7 +220,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// The LAN remote: starts when enabled in settings (or with `--remote`) and follows later changes.
+    private func startRemoteHost() {
+        let host = RemoteHost(
+            settings: settings,
+            session: overlayController.session,
+            overlay: overlayController,
+            pairing: PairingService(store: KeychainPairedDeviceStore()),
+            toolbarFrame: { [weak self] in self?.toolbarController?.frame }
+        )
+        host.forceEnabled = CommandLine.arguments.contains("--remote")
+        remoteHost = host
+        var lastRemote = settings.value.remote
+        settings.observe { [weak self] in
+            guard let self, self.settings.value.remote != lastRemote else { return }
+            lastRemote = self.settings.value.remote
+            self.remoteHost?.apply()
+        }
+        host.apply()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        remoteHost?.stop()
         editorController.flush()
         overlayController.shutdown()
         drawToggleHotKey?.shutdown()

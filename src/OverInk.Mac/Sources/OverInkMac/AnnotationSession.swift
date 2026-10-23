@@ -10,7 +10,25 @@ final class AnnotationSession {
         var id: UUID { stroke.id }
     }
 
+    /// What an edit changed, for the remote host (so the iPad can drop or restore its own copies).
+    struct InkDiff: Equatable {
+        var removed: [UUID] = []
+        var added: [PlacedStroke] = []
+        var cleared = false
+
+        var isEmpty: Bool { removed.isEmpty && added.isEmpty && !cleared }
+    }
+
+    /// A stroke an iPad is drawing right now. It shows on the overlay but is not part of the history until
+    /// the stroke ends.
+    struct LiveStroke: Equatable {
+        let displayID: CGDirectDisplayID
+        var stroke: InkStroke
+        let author: String
+    }
+
     private var history = EditHistory<PlacedStroke>()
+    private(set) var liveStrokes: [String: LiveStroke] = [:]
 
     /// Bumped whenever the committed strokes change, so views can cache rendered ink.
     private(set) var revision = 0
@@ -50,7 +68,16 @@ final class AnnotationSession {
     }
 
     var changed: (() -> Void)?
+    private var changeObservers: [() -> Void] = []
     private var settingsObservers: [() -> Void] = []
+
+    /// Called by every host of the session after any committed or live ink change (including from other observers).
+    func observeChanges(_ observer: @escaping () -> Void) {
+        changeObservers.append(observer)
+    }
+
+    /// Called after undo, redo, erase and clear with what changed. Not called for newly drawn strokes.
+    var inkDiffHandler: ((InkDiff) -> Void)?
 
     /// Called whenever tool, color, width, pressure, or veil change.
     func observeSettings(_ observer: @escaping () -> Void) {
@@ -67,23 +94,24 @@ final class AnnotationSession {
             .map(\.stroke)
     }
 
-    func append(_ stroke: InkStroke, on displayID: CGDirectDisplayID) {
-        history.append(PlacedStroke(displayID: displayID, stroke: stroke))
+    func append(_ stroke: InkStroke, on displayID: CGDirectDisplayID, author: String? = nil) {
+        history.append(PlacedStroke(displayID: displayID, stroke: stroke), author: author)
         notifyChanged()
     }
 
-    func undo() {
-        if history.undo() { notifyChanged() }
+    func undo(author: String? = nil) {
+        edit { $0.undo(author: author) }
     }
 
-    func redo() {
-        if history.redo() { notifyChanged() }
+    func redo(author: String? = nil) {
+        edit { $0.redo(author: author) }
     }
 
-    func clear() {
+    func clear(author: String? = nil) {
         guard !history.items.isEmpty else { return }
-        history.clear()
+        history.clear(author: author)
         notifyChanged()
+        inkDiffHandler?(InkDiff(cleared: true))
     }
 
     func erase(on displayID: CGDirectDisplayID, near point: InkPoint, radius: Double) {
@@ -92,13 +120,72 @@ final class AnnotationSession {
         }) else {
             return
         }
-        history.remove(id: target.id)
+        edit { history in
+            history.remove(id: target.id)
+            return true
+        }
+    }
+
+    /// Applies the outcome of an eraser sweep as one undo step.
+    func apply(_ erase: StrokeEraser.Result, on displayID: CGDirectDisplayID, author: String?) {
+        guard !erase.isEmpty else { return }
+        edit { history in
+            history.edit(
+                removing: erase.removed,
+                adding: erase.added.map { PlacedStroke(displayID: displayID, stroke: $0) },
+                author: author
+            )
+            return true
+        }
+    }
+
+    /// Whether `author` has an edit to undo or redo (a remote client's undo only touches its own work).
+    func canUndo(author: String?) -> Bool { history.canUndo(author: author) }
+    func canRedo(author: String?) -> Bool { history.canRedo(author: author) }
+
+    // MARK: Live remote strokes
+
+    func beginLive(id: String, displayID: CGDirectDisplayID, stroke: InkStroke, author: String) {
+        liveStrokes[id] = LiveStroke(displayID: displayID, stroke: stroke, author: author)
+        changed?()
+    }
+
+    func extendLive(id: String, with points: [InkPoint]) {
+        guard var live = liveStrokes[id], !points.isEmpty else { return }
+        live.stroke.points.append(contentsOf: points)
+        liveStrokes[id] = live
+        changed?()
+    }
+
+    @discardableResult
+    func endLive(id: String) -> LiveStroke? {
+        guard let live = liveStrokes.removeValue(forKey: id) else { return nil }
+        changed?()
+        return live
+    }
+
+    func liveStrokes(for displayID: CGDirectDisplayID) -> [InkStroke] {
+        liveStrokes.values.filter { $0.displayID == displayID }.map(\.stroke)
+    }
+
+    /// Runs `mutation` on the history; if it changed anything, reports what.
+    private func edit(_ mutation: (inout EditHistory<PlacedStroke>) -> Bool) {
+        let before = history.items
+        guard mutation(&history) else { return }
+        let beforeIDs = Set(before.map(\.id))
+        let afterIDs = Set(history.items.map(\.id))
+        let diff = InkDiff(
+            removed: before.map(\.id).filter { !afterIDs.contains($0) },
+            added: history.items.filter { !beforeIDs.contains($0.id) }
+        )
         notifyChanged()
+        if !diff.isEmpty { inkDiffHandler?(diff) }
     }
 
     private func notifyChanged() {
         revision += 1
         changed?()
+        changeObservers.forEach { $0() }
     }
 }
 

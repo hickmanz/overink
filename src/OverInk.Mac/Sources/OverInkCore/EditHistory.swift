@@ -89,6 +89,23 @@ public struct EditHistory<Item: Identifiable & Sendable>: Sendable where Item.ID
         return true
     }
 
+    /// Removes `ids` and appends `added` as a single undo step (an erase that leaves pieces behind).
+    /// Returns the removed items.
+    @discardableResult
+    public mutating func edit(removing ids: [Item.ID], adding added: [Item], author: String? = nil) -> [Item] {
+        let targets = Set(ids)
+        var edits: [Edit] = []
+        var removed: [Item] = []
+        for index in items.indices.reversed() where targets.contains(items[index].id) {
+            edits.append(.remove(items[index], index: index))
+            removed.append(items[index])
+        }
+        edits.append(contentsOf: added.map { Edit.add($0) })
+        guard !edits.isEmpty else { return [] }
+        record(edits.count == 1 ? edits[0] : .batch(edits), author: author)
+        return removed.reversed()
+    }
+
     public mutating func clear(author: String? = nil) {
         guard !items.isEmpty else { return }
         record(.clear(items), author: author)
