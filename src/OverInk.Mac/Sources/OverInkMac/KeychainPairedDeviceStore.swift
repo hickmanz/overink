@@ -4,20 +4,40 @@ import Security
 
 /// Paired devices (name, key hash, last seen), kept in the login Keychain.
 ///
-/// An unsigned development build can be refused Keychain access (or be asked about it after every
-/// rebuild). In that case the list falls back to a private file in Application Support, so pairing still
-/// works. Only hashes of device keys are ever stored, so the file holds nothing that can be replayed.
+/// A build without a Team ID (a development build) must not touch the Keychain: every rebuild changes the
+/// app's identity, so macOS stops the app with a password prompt on the main thread. Those builds, and any
+/// Keychain failure, use a private file in Application Support instead, so pairing still works. Only hashes
+/// of device keys are ever stored, so the file holds nothing that can be replayed.
 final class KeychainPairedDeviceStore: PairedDeviceStore, @unchecked Sendable {
     private let service: String
     private let account = "paired-devices"
     private let fallbackURL: URL
     private let lock = NSLock()
+    private let keychainAllowed: Bool
+
+    /// Whether this process is signed with a Team ID (Developer ID or App Store builds are).
+    static let isTeamSigned: Bool = {
+        var code: SecCode?
+        var staticCode: SecStaticCode?
+        var info: CFDictionary?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(
+                  staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info
+              ) == errSecSuccess,
+              let dictionary = info as? [String: Any] else {
+            return false
+        }
+        return dictionary[kSecCodeInfoTeamIdentifier as String] is String
+    }()
 
     init(
         service: String = "app.overink.mac.remote",
         fallbackURL: URL = MacSettingsStore.defaultFileURL
-            .deletingLastPathComponent().appendingPathComponent("paired-devices.json")
+            .deletingLastPathComponent().appendingPathComponent("paired-devices.json"),
+        useKeychain: Bool = KeychainPairedDeviceStore.isTeamSigned
     ) {
+        keychainAllowed = useKeychain
         self.service = service
         self.fallbackURL = fallbackURL
     }
@@ -51,6 +71,7 @@ final class KeychainPairedDeviceStore: PairedDeviceStore, @unchecked Sendable {
     }
 
     private func readKeychain() -> Data? {
+        guard keychainAllowed else { return nil }
         var query = baseQuery
         query[kSecReturnData] = true
         query[kSecMatchLimit] = kSecMatchLimitOne
@@ -62,6 +83,7 @@ final class KeychainPairedDeviceStore: PairedDeviceStore, @unchecked Sendable {
     }
 
     private func writeKeychain(_ data: Data) -> Bool {
+        guard keychainAllowed else { return false }
         let update = SecItemUpdate(
             baseQuery as CFDictionary,
             [kSecValueData: data] as CFDictionary

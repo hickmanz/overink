@@ -13,6 +13,8 @@ rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources"
 cp "$binary_dir/OverInkMac" "$contents/MacOS/OverInkMac"
 cp "$package/Supporting/Info.plist" "$contents/Info.plist"
+# The web client the iPad loads (shared with the Windows app). -L follows the symlink in the package.
+cp -RL "$package/Sources/OverInkMac/RemoteWeb" "$contents/Resources/RemoteWeb"
 
 plutil -replace CFBundleDisplayName -string "OverInk Dev" "$contents/Info.plist"
 plutil -replace CFBundleName -string "OverInk Dev" "$contents/Info.plist"
@@ -28,5 +30,6 @@ codesign \
   --entitlements "$package/Supporting/OverInk.entitlements" \
   "$app"
 
-open "$app"
+# Extra arguments are passed to the app, for example `scripts/run-mac-dev.sh --remote`.
+open "$app" --args "$@"
 print "Launched $app"

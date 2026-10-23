@@ -81,6 +81,14 @@ final class RemoteHost {
     private let overlay: OverlayController
     private let toolbarFrame: () -> NSRect?
 
+    private lazy var streamer = FrameStreamer(server: server)
+    private var frameDemand = 0
+
+    /// Why the picture is not streaming (permission missing, display gone), if it is not.
+    private(set) var streamIssue: String? {
+        didSet { if streamIssue != oldValue { onStatusChange?() } }
+    }
+
     private var inbox: (stream: AsyncStream<(String, RemoteClientMessage)>, continuation: AsyncStream<(String, RemoteClientMessage)>.Continuation)
     private var consumer: Task<Void, Never>?
     private var live: [String: LiveOwner] = [:]
@@ -156,6 +164,8 @@ final class RemoteHost {
         consumer?.cancel()
         consumer = nil
         for key in Array(live.keys) { cancelLive(key, broadcast: false) }
+        streamer.apply(nil, displayIDs: [:])
+        frameDemand = 0
         server.stop()
         status = .stopped
         lastBroadcastState = nil
@@ -170,8 +180,18 @@ final class RemoteHost {
         return text
     }
 
+    /// The shared web client. A packaged app carries it in `Contents/Resources/RemoteWeb`; `swift run` and
+    /// the development bundle fall back to the SwiftPM resource bundle next to the build.
+    private static func webClientRoot() -> URL? {
+        if let packaged = Bundle.main.resourceURL?.appendingPathComponent("RemoteWeb"),
+           FileManager.default.fileExists(atPath: packaged.appendingPathComponent("index.html").path) {
+            return packaged
+        }
+        return Bundle.module.url(forResource: "RemoteWeb", withExtension: nil)
+    }
+
     private func configureServer() {
-        server.staticRoot = Bundle.module.url(forResource: "RemoteWeb", withExtension: nil)
+        server.staticRoot = Self.webClientRoot()
 
         server.onHello = { [weak self] hello, peer, connectionID in
             guard let self else {
@@ -189,8 +209,18 @@ final class RemoteHost {
         server.onClientRemoved = { [weak self] id in
             Task { @MainActor in self?.clientRemoved(id) }
         }
-        server.onStreamDemandChanged = { [weak self] _ in
-            Task { @MainActor in self?.onStreamChanged?() }
+        server.onStreamDemandChanged = { [weak self] count in
+            Task { @MainActor in
+                guard let self else { return }
+                let joined = count > self.frameDemand
+                self.frameDemand = count
+                self.updateStreamer()
+                if joined { self.streamer.resend() }
+            }
+        }
+        streamer.onIssue = { [weak self] message in
+            if let message { NSLog("OverInk remote stream: %@", message) }
+            Task { @MainActor in self?.streamIssue = message }
         }
     }
 
@@ -198,11 +228,17 @@ final class RemoteHost {
         guard !observing else { return }
         observing = true
         session.inkDiffHandler = { [weak self] diff in self?.broadcast(diff) }
+        session.observeChanges { [weak self] in
+            guard let self else { return }
+            self.streamer.recordRevision(Int64(self.session.revision))
+        }
+        streamer.recordRevision(Int64(session.revision))
         session.observeSettings { [weak self] in self?.scheduleStateBroadcast() }
         settings.observe { [weak self] in
             guard let self else { return }
             self.server.maxClients = self.settings.value.remote.maxClients
             self.refreshStream()
+            self.updateStreamer()
             self.scheduleStateBroadcast()
         }
         overlay.addModeObserver { [weak self] _ in self?.scheduleStateBroadcast() }
@@ -262,8 +298,30 @@ final class RemoteHost {
         let rect = streamRect()
         guard rect != lastStreamRect else { return }
         lastStreamRect = rect
+        updateStreamer()
         onStreamChanged?()
         scheduleStateBroadcast()
+    }
+
+    /// Captures only while somebody is watching, and re-plans when the rectangle or quality settings change.
+    private func updateStreamer() {
+        guard isRunning, frameDemand > 0 else {
+            streamer.apply(nil, displayIDs: [:])
+            return
+        }
+        let live = displays
+        let remote = settings.value.remote
+        let maxEdge = remote.maxEdge > 0
+            ? remote.maxEdge
+            : (remote.streamTarget == .allDisplays ? RemoteStreamEstimator.autoAllDisplaysMaxEdge : 7680)
+        guard let plan = StreamPlan.make(rect: streamRect(), displays: live.map(\.stream), maxEdge: maxEdge) else {
+            streamer.apply(nil, displayIDs: [:])
+            return
+        }
+        streamer.apply(
+            FrameStreamer.Configuration(plan: plan, fps: remote.maxFps, quality: remote.jpegQuality),
+            displayIDs: Dictionary(live.map { ($0.stream.id, $0.id) }, uniquingKeysWith: { first, _ in first })
+        )
     }
 
     // MARK: State
@@ -487,6 +545,7 @@ final class RemoteHost {
             sendAll("hover", relayed, except: clientID)
         case .viewMode(let doc):
             server.setDocMode(doc, for: clientID)
+            if !doc { streamer.resend() }
         case .capture:
             captureForClient(clientID)
         }
