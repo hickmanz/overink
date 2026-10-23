@@ -1,24 +1,24 @@
 import Foundation
-import XCTest
+import Testing
 @testable import OverInkCore
 
-final class ProtocolTests: XCTestCase {
-    func testHelloMatchesWindowsCamelCaseShape() throws {
+@Suite struct ProtocolTests {
+    @Test func helloMatchesWindowsCamelCaseShape() throws {
         let hello = RemoteHello(
             deviceKey: "device-key",
             pair: "123456",
             deviceName: "MacBook Pro"
         )
         let data = try RemoteJSON.encoder().encode(hello)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        XCTAssertEqual(object["v"] as? Int, 1)
-        XCTAssertEqual(object["deviceKey"] as? String, "device-key")
-        XCTAssertEqual(object["pair"] as? String, "123456")
-        XCTAssertEqual(object["deviceName"] as? String, "MacBook Pro")
+        #expect(object["v"] as? Int == 1)
+        #expect(object["deviceKey"] as? String == "device-key")
+        #expect(object["pair"] as? String == "123456")
+        #expect(object["deviceName"] as? String == "MacBook Pro")
     }
 
-    func testWrappedMessageUsesFlatTypeDiscriminator() throws {
+    @Test func wrappedMessageUsesFlatTypeDiscriminator() throws {
         let state = RemoteState(
             tool: "pen",
             color: "#E53935",
@@ -30,12 +30,12 @@ final class ProtocolTests: XCTestCase {
         )
 
         let data = try RemoteJSON.wrap("state", payload: state)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        XCTAssertEqual(object["t"] as? String, "state")
-        XCTAssertEqual(object["tool"] as? String, "pen")
-        XCTAssertEqual(object["pressureSensitive"] as? Bool, true)
-        XCTAssertEqual(object["streamEpoch"] as? Int, 0)
-        XCTAssertEqual(try RemoteJSON.messageType(in: data), "state")
+        #expect(object["t"] as? String == "state")
+        #expect(object["tool"] as? String == "pen")
+        #expect(object["pressureSensitive"] as? Bool == true)
+        #expect(object["streamEpoch"] as? Int == 0)
+        #expect(try RemoteJSON.messageType(in: data) == "state")
     }
 }

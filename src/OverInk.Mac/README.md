@@ -10,8 +10,8 @@ Native Swift/AppKit implementation of OverInk.
 - Shared multi-display annotation history with pressure-aware Core Graphics rendering
 - Native `NSGlassEffectView` Liquid Glass toolbar on macOS 26+, with Lucide icons and compact menus
 - Pen, line, arrow, rectangle, ellipse, whole-stroke eraser, pressure, color, width, and screen veil
-- Global `Command-Shift-A` mode shortcut
-- Screen Recording and Accessibility permission entry points
+- Global draw toggle (default `Control-Shift-D`, matching Windows) registered with Carbon hotkeys, so no Accessibility permission is needed
+- Screen Recording permission entry point
 - ScreenCaptureKit clean-background capture with offscreen ink/veil composition
 - Capture package with flattened PNG, `.orig.png`, and versioned editable `.overink.json`
 - Native capture library with thumbnail grid, open, copy, reveal, and delete actions
@@ -31,7 +31,7 @@ swift run OverInkMac
 
 `swift run` is useful for development, but it does not create a signed application bundle. Production packaging requires full Xcode, an app target with privacy usage descriptions and entitlements, a Developer ID certificate, and notarization.
 
-The app starts in pass-through mode. Use the menu-bar pencil or `Command-Shift-A` to enter drawing mode. Press `Escape` at any time to leave drawing mode.
+The app starts in pass-through mode. Use the menu-bar pencil or `Control-Shift-D` to enter drawing mode. Press `Escape` at any time to leave drawing mode.
 
 For Screen Recording permission testing, launch the ad-hoc signed development bundle from the repository root:
 

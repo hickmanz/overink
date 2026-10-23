@@ -10,7 +10,7 @@ final class CaptureEditorController: NSObject {
     private var onSave: (() -> Void)?
     private let veilSlider = NSSlider(value: 0, minValue: 0, maxValue: 0.6, target: nil, action: nil)
     private let colorWell = NSColorWell()
-    private let widthSlider = NSSlider(value: 4, minValue: 1, maxValue: 20, target: nil, action: nil)
+    private let widthSlider = NSSlider(value: 4, minValue: 1, maxValue: 24, target: nil, action: nil)
 
     func open(_ flattenedURL: URL, onSave: @escaping () -> Void) {
         do {

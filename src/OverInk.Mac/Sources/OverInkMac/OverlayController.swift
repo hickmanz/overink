@@ -122,6 +122,13 @@ final class InkCanvasView: NSView {
     private var activeTool = SketchTool.pen
     private var activeStart: InkPoint?
 
+    // Committed ink is rendered once into a bitmap and re-rendered only when the session's
+    // strokes change, so dragging a new stroke never re-strokes everything already drawn.
+    private var cachedInk: NSImage?
+    private var cachedRevision = -1
+    private var cachedScale: CGFloat = 0
+    private var cachedSize = NSSize.zero
+
     init(displayID: CGDirectDisplayID, session: AnnotationSession) {
         self.displayID = displayID
         self.session = session
@@ -142,8 +149,7 @@ final class InkCanvasView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard isDrawingEnabled else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        let inkPoint = inkPoint(point, event: event)
+        let inkPoint = inkPoint(for: event)
         activeTool = session.tool
         if activeTool == .eraser {
             session.erase(on: displayID, near: inkPoint, radius: max(8, session.penWidth * 2))
@@ -162,8 +168,7 @@ final class InkCanvasView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard isDrawingEnabled else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        let current = inkPoint(point, event: event)
+        let current = inkPoint(for: event)
         if activeTool == .eraser {
             session.erase(on: displayID, near: current, radius: max(8, session.penWidth * 2))
             return
@@ -172,7 +177,12 @@ final class InkCanvasView: NSView {
         if activeTool == .pen {
             activeStroke?.points.append(current)
         } else {
-            activeStroke?.points = shapePoints(tool: activeTool, from: activeStart, to: current)
+            activeStroke?.points = StrokeGeometry.shapePoints(
+                tool: activeTool,
+                from: activeStart,
+                to: current,
+                constrain: event.modifierFlags.contains(.shift)
+            )
         }
         needsDisplay = true
     }
@@ -180,18 +190,23 @@ final class InkCanvasView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard activeTool != .eraser else { return }
         guard var stroke = activeStroke else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        let current = inkPoint(point, event: event)
+        let current = inkPoint(for: event)
         if activeTool == .pen {
-            if stroke.points.last.map({ $0.x != point.x || $0.y != point.y }) ?? true {
+            if let last = stroke.points.last, last.x != current.x || last.y != current.y {
                 stroke.points.append(current)
             }
+            StrokeSmoother.apply(to: &stroke)
         } else if let activeStart {
-            stroke.points = shapePoints(tool: activeTool, from: activeStart, to: current)
+            stroke.points = StrokeGeometry.shapePoints(
+                tool: activeTool,
+                from: activeStart,
+                to: current,
+                constrain: event.modifierFlags.contains(.shift)
+            )
         }
-        session.append(stroke, on: displayID)
         activeStroke = nil
         activeStart = nil
+        session.append(stroke, on: displayID)
         needsDisplay = true
     }
 
@@ -203,107 +218,67 @@ final class InkCanvasView: NSView {
             context.setFillColor(NSColor.white.withAlphaComponent(session.veilOpacity).cgColor)
             context.fill(bounds)
         }
-        for stroke in session.strokes(for: displayID) {
-            draw(stroke, in: context)
+        if let image = committedInkImage() {
+            image.draw(
+                in: bounds,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: nil
+            )
         }
         if let activeStroke {
-            draw(activeStroke, in: context)
+            StrokeRenderer.draw(activeStroke, in: context)
         }
     }
 
-    private func inkPoint(_ point: NSPoint, event: NSEvent) -> InkPoint {
+    private func inkPoint(for event: NSEvent) -> InkPoint {
+        let point = convert(event.locationInWindow, from: nil)
         let reportedPressure = event.pressure
         let pressure: Float = reportedPressure > 0 ? reportedPressure : 1
         return InkPoint(x: point.x, y: point.y, pressure: pressure)
     }
 
-    private func draw(_ stroke: InkStroke, in context: CGContext) {
-        guard let first = stroke.points.first else { return }
-
-        context.saveGState()
-        context.setStrokeColor(NSColor(hex: stroke.colorHex).cgColor)
-        context.setFillColor(NSColor(hex: stroke.colorHex).cgColor)
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
-
-        if stroke.points.count == 1 {
-            let diameter = pressureWidth(for: first, stroke: stroke)
-            context.fillEllipse(
-                in: CGRect(
-                    x: first.x - diameter / 2,
-                    y: first.y - diameter / 2,
-                    width: diameter,
-                    height: diameter
-                )
-            )
-        } else {
-            for (start, end) in zip(stroke.points, stroke.points.dropFirst()) {
-                let width = (
-                    pressureWidth(for: start, stroke: stroke)
-                        + pressureWidth(for: end, stroke: stroke)
-                ) / 2
-                context.setLineWidth(width)
-                context.beginPath()
-                context.move(to: CGPoint(x: start.x, y: start.y))
-                context.addLine(to: CGPoint(x: end.x, y: end.y))
-                context.strokePath()
-            }
+    private func committedInkImage() -> NSImage? {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        if cachedRevision == session.revision, cachedScale == scale, cachedSize == bounds.size {
+            return cachedInk
         }
-        context.restoreGState()
-    }
+        cachedRevision = session.revision
+        cachedScale = scale
+        cachedSize = bounds.size
 
-    private func pressureWidth(for point: InkPoint, stroke: InkStroke) -> Double {
-        guard !stroke.ignoresPressure else { return stroke.width }
-        return stroke.width * (0.35 + 0.65 * Double(point.pressure))
-    }
-
-    private func shapePoints(tool: SketchTool, from start: InkPoint, to end: InkPoint) -> [InkPoint] {
-        switch tool {
-        case .pen, .eraser:
-            [start, end]
-        case .line:
-            [start, end]
-        case .arrow:
-            arrowPoints(from: start, to: end)
-        case .rectangle:
-            [
-                start,
-                InkPoint(x: end.x, y: start.y),
-                end,
-                InkPoint(x: start.x, y: end.y),
-                start
-            ]
-        case .ellipse:
-            ellipsePoints(from: start, to: end)
+        let strokes = session.strokes(for: displayID)
+        guard !strokes.isEmpty, bounds.width > 0, bounds.height > 0 else {
+            cachedInk = nil
+            return nil
         }
-    }
 
-    private func arrowPoints(from start: InkPoint, to end: InkPoint) -> [InkPoint] {
-        let angle = atan2(end.y - start.y, end.x - start.x)
-        let length = min(24, max(10, hypot(end.x - start.x, end.y - start.y) * 0.25))
-        let spread = Double.pi / 7
-        let left = InkPoint(
-            x: end.x - length * cos(angle - spread),
-            y: end.y - length * sin(angle - spread)
-        )
-        let right = InkPoint(
-            x: end.x - length * cos(angle + spread),
-            y: end.y - length * sin(angle + spread)
-        )
-        return [start, end, left, end, right]
-    }
-
-    private func ellipsePoints(from start: InkPoint, to end: InkPoint) -> [InkPoint] {
-        let centerX = (start.x + end.x) / 2
-        let centerY = (start.y + end.y) / 2
-        let radiusX = abs(end.x - start.x) / 2
-        let radiusY = abs(end.y - start.y) / 2
-        return (0 ... 48).map { index in
-            let angle = Double(index) / 48 * Double.pi * 2
-            return InkPoint(
-                x: centerX + cos(angle) * radiusX,
-                y: centerY + sin(angle) * radiusY
-            )
+        let pixelWidth = Int((bounds.width * scale).rounded(.up))
+        let pixelHeight = Int((bounds.height * scale).rounded(.up))
+        guard let context = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            cachedInk = nil
+            return nil
         }
+        // Match the flipped (top-left origin) coordinates strokes are stored in.
+        context.translateBy(x: 0, y: CGFloat(pixelHeight))
+        context.scaleBy(x: scale, y: -scale)
+        strokes.forEach { StrokeRenderer.draw($0, in: context) }
+
+        guard let image = context.makeImage() else {
+            cachedInk = nil
+            return nil
+        }
+        cachedInk = NSImage(cgImage: image, size: bounds.size)
+        return cachedInk
     }
 }

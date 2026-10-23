@@ -1,5 +1,5 @@
 import AppKit
-import ApplicationServices
+import OverInkCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -21,14 +21,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return ids
         }
     )
-    private lazy var escapeHotKey = EscapeHotKey { [weak self] in
+    private lazy var escapeHotKey = HotKeyBinding(
+        chord: KeyChord(keyCode: KeyCodes.escape),
+        enabled: false,
+        allowsBareKey: true
+    ) { [weak self] in
         self?.overlayController.setMode(.passThrough)
     }
+    private var drawToggleHotKey: HotKeyBinding?
     private var toolbarController: ToolbarController?
     private var statusItem: NSStatusItem?
     private var modeMenuItem: NSMenuItem?
-    private var globalKeyMonitor: Any?
-    private var localKeyMonitor: Any?
     private var showedScreenPermissionHelp = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -38,7 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.persistDrawingSettings()
         }
         configureStatusItem()
-        configureKeyboardShortcut()
+        drawToggleHotKey = HotKeyBinding(chord: settings.drawHotkey) { [weak self] in
+            self?.overlayController.toggleMode()
+        }
         toolbarController = ToolbarController(
             overlayController: overlayController,
             onCapture: { [weak self] in self?.capture() },
@@ -93,12 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         escapeHotKey.shutdown()
-        if let globalKeyMonitor {
-            NSEvent.removeMonitor(globalKeyMonitor)
-        }
-        if let localKeyMonitor {
-            NSEvent.removeMonitor(localKeyMonitor)
-        }
+        drawToggleHotKey?.shutdown()
     }
 
     private func configureStatusItem() {
@@ -179,14 +179,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         screenPermissionItem.target = self
         menu.addItem(screenPermissionItem)
 
-        let inputPermissionItem = NSMenuItem(
-            title: "Request Accessibility Permission…",
-            action: #selector(requestAccessibilityPermission),
-            keyEquivalent: ""
-        )
-        inputPermissionItem.target = self
-        menu.addItem(inputPermissionItem)
-
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
@@ -200,44 +192,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
-    private func configureKeyboardShortcut() {
-        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            let isEscape = event.keyCode == 53
-            let isToggle = Self.isToggleShortcut(event)
-            Task { @MainActor [weak self] in
-                if isEscape {
-                    self?.overlayController.setMode(.passThrough)
-                } else if isToggle {
-                    self?.overlayController.toggleMode()
-                }
-            }
-        }
-
-        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 {
-                self?.overlayController.setMode(.passThrough)
-                return nil
-            }
-            if Self.isToggleShortcut(event) {
-                self?.overlayController.toggleMode()
-                return nil
-            }
-            return event
-        }
-    }
-
-    private static func isToggleShortcut(_ event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        return modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "a"
+    private var drawShortcutLabel: String {
+        settings.drawHotkey.displayString
     }
 
     private func refreshModeMenuItem(_ mode: OverlayController.InteractionMode) {
         switch mode {
         case .draw:
-            modeMenuItem?.title = "Use Pass-Through Mode (⌘⇧A)"
+            modeMenuItem?.title = "Use Pass-Through Mode (\(drawShortcutLabel))"
             statusItem?.button?.contentTintColor = .systemRed
         case .passThrough:
-            modeMenuItem?.title = "Start Drawing (⌘⇧A)"
+            modeMenuItem?.title = "Start Drawing (\(drawShortcutLabel))"
             statusItem?.button?.contentTintColor = nil
         }
     }
@@ -391,19 +356,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
            ) {
             NSWorkspace.shared.open(settingsURL)
-        }
-    }
-
-    @objc private func requestAccessibilityPermission() {
-        // The public constant is imported as mutable global state, which Swift 6 rejects from
-        // actor-isolated code. Its documented string value is stable across supported macOS versions.
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-        if !trusted {
-            showAlert(
-                message: "Accessibility permission is not enabled.",
-                detail: "Enable OverInk in System Settings → Privacy & Security → Accessibility for the global drawing shortcut."
-            )
         }
     }
 

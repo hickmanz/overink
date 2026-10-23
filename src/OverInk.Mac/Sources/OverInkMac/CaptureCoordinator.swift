@@ -81,9 +81,14 @@ final class CaptureCoordinator {
                 canvasWidth: region.width,
                 canvasHeight: region.height,
                 veilOpacity: annotationSession.veilOpacity,
-                strokes: croppedStrokes(
+                strokes: StrokeGeometry.crop(
                     annotationSession.strokes(for: displayID),
-                    to: region
+                    to: PixelRect(
+                        x: region.minX,
+                        y: region.minY,
+                        width: region.width,
+                        height: region.height
+                    )
                 )
             )
             outputSize = region.size
@@ -130,40 +135,6 @@ final class CaptureCoordinator {
             throw CaptureSaveError.encodingFailed
         }
         return cropped
-    }
-
-    private func croppedStrokes(_ strokes: [InkStroke], to region: NSRect) -> [InkStroke] {
-        strokes.compactMap { stroke in
-            guard let first = stroke.points.first else { return nil }
-            var minX = first.x
-            var maxX = first.x
-            var minY = first.y
-            var maxY = first.y
-            for point in stroke.points.dropFirst() {
-                minX = min(minX, point.x)
-                maxX = max(maxX, point.x)
-                minY = min(minY, point.y)
-                maxY = max(maxY, point.y)
-            }
-            let bounds = NSRect(
-                x: minX,
-                y: minY,
-                width: max(maxX - minX, 1),
-                height: max(maxY - minY, 1)
-            ).insetBy(dx: -stroke.width, dy: -stroke.width)
-            guard bounds.intersects(region) else {
-                return nil
-            }
-            var shifted = stroke
-            shifted.points = stroke.points.map {
-                InkPoint(
-                    x: $0.x - region.minX,
-                    y: $0.y - region.minY,
-                    pressure: $0.pressure
-                )
-            }
-            return shifted
-        }
     }
 
     private func writeDocument(_ document: CaptureDocument, beside imageURL: URL) throws {

@@ -1,9 +1,9 @@
 import Foundation
-import XCTest
+import Testing
 @testable import OverInkCore
 
-final class InkTests: XCTestCase {
-    func testInkDocumentRoundTrips() throws {
+@Suite struct InkTests {
+    @Test func inkDocumentRoundTrips() throws {
         let stroke = InkStroke(
             id: UUID(uuidString: "D218537D-6F1E-48A4-B548-423BFE77E15A")!,
             colorHex: "#E53935",
@@ -16,25 +16,23 @@ final class InkTests: XCTestCase {
         let document = InkDocument(strokes: [stroke])
 
         let data = try JSONEncoder().encode(document)
-        let decoded = try JSONDecoder().decode(InkDocument.self, from: data)
-
-        XCTAssertEqual(decoded, document)
+        #expect(try JSONDecoder().decode(InkDocument.self, from: data) == document)
     }
 
-    func testHistoryInvalidatesRedoAfterNewStroke() {
+    @Test func historyInvalidatesRedoAfterNewStroke() {
         var history = InkHistory()
         let first = InkStroke(colorHex: "#000000", width: 2)
         let replacement = InkStroke(colorHex: "#FFFFFF", width: 3)
 
         history.append(first)
-        XCTAssertEqual(history.undo(), first)
+        #expect(history.undo() == first)
         history.append(replacement)
 
-        XCTAssertNil(history.redo())
-        XCTAssertEqual(history.strokes, [replacement])
+        #expect(history.redo() == nil)
+        #expect(history.strokes == [replacement])
     }
 
-    func testEditableCaptureDocumentRoundTrips() throws {
+    @Test func editableCaptureDocumentRoundTrips() throws {
         let document = CaptureDocument(
             canvasWidth: 1440,
             canvasHeight: 900,
@@ -43,9 +41,6 @@ final class InkTests: XCTestCase {
         )
 
         let data = try JSONEncoder().encode(document)
-        XCTAssertEqual(
-            try JSONDecoder().decode(CaptureDocument.self, from: data),
-            document
-        )
+        #expect(try JSONDecoder().decode(CaptureDocument.self, from: data) == document)
     }
 }
