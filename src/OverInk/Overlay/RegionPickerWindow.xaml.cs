@@ -38,8 +38,29 @@ public partial class RegionPickerWindow : Window
             }
         };
         // WPF positions a window by its own Left/Top the first time it shows; place it over the desktop again.
-        Loaded += (_, _) => PlaceOverDesktop();
+        Loaded += (_, _) =>
+        {
+            PlaceOverDesktop();
+            _active = this;
+            Activate();
+            Focus();
+        };
+        Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_active, this))
+            {
+                _active = null;
+            }
+        };
     }
+
+    private static RegionPickerWindow? _active;
+
+    /// <summary>True while a region picker is on screen.</summary>
+    public static bool IsOpen => _active is not null;
+
+    /// <summary>Cancels the open picker (if any). Used when Esc arrives through the global keyboard hook.</summary>
+    public static void CancelActive() => _active?.Cancel();
 
     /// <summary>The chosen area in desktop pixels (can lie on any monitor).</summary>
     public Rect? SelectedPixelsRect { get; private set; }

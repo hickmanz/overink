@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using OverInk.Models;
+using OverInk.Overlay;
 
 namespace OverInk.Services;
 
@@ -67,7 +68,22 @@ public sealed class GlobalKeyboardService : IDisposable
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode < 0 || !_isOverlayVisible())
+        if (nCode < 0)
+        {
+            return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+        }
+
+        // Capture mode: Esc cancels the region picker, even when it never got keyboard focus
+        // or the overlay is hidden.
+        if (RegionPickerWindow.IsOpen &&
+            (wParam == (IntPtr)WmKeydown || wParam == (IntPtr)WmSyskeydown) &&
+            Marshal.ReadInt32(lParam) == VkEscape)
+        {
+            Application.Current.Dispatcher.BeginInvoke(RegionPickerWindow.CancelActive);
+            return (IntPtr)1;
+        }
+
+        if (!_isOverlayVisible())
         {
             return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
         }
