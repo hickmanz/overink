@@ -75,7 +75,7 @@ public sealed class ApplicationHost : IDisposable
         {
             if (!_disposed)
             {
-                _toolbar.RestoreHomePosition();
+                _toolbar.BeginHomeWatch("display or session event settled");
             }
         };
         StreamTargetResolver.FollowMonitorChanged += OnStreamTargetMoved;

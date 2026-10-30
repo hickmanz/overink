@@ -7,6 +7,7 @@ using System.Windows.Media;
 using OverInk.Interop;
 using OverInk.Models;
 using OverInk.Overlay;
+using OverInk.Remote;
 using OverInk.Services;
 
 namespace OverInk.Toolbar;
@@ -84,6 +85,8 @@ public partial class ToolbarWindow : Window
             {
                 WindowPlacement.MoveToPixels(this, px, py);
             }
+
+            StartDisplayStateWatch();
         };
 
         LocationChanged += (_, _) =>
@@ -92,6 +95,7 @@ public partial class ToolbarWindow : Window
             // not overwrite where the user left it. Drag end and the orientation toggle save the position.
             UpdatePopupPlacement();
             ReportMonitor();
+            OnLocationChangedWhileWatching();
             BoundsChanged?.Invoke(this, EventArgs.Empty);
         };
 
@@ -550,17 +554,32 @@ public partial class ToolbarWindow : Window
         var settings = _session.Settings.Current;
         var rect = WindowPlacement.GetPixelRect(this);
         var home = MonitorHelper.FindByDeviceName(settings.ToolbarMonitor);
-        if (!rect.IsEmpty && home is { } monitor &&
-            settings.ToolbarMonitorFracX is { } fx && settings.ToolbarMonitorFracY is { } fy)
+        _restoring = true;
+        try
         {
-            var target = DesktopLayout.HomePixelPosition(monitor.Pixels, fx, fy, rect.Size);
-            if (Math.Abs(target.X - rect.X) >= 1 || Math.Abs(target.Y - rect.Y) >= 1)
+            if (!rect.IsEmpty && home is { } monitor &&
+                settings.ToolbarMonitorFracX is { } fx && settings.ToolbarMonitorFracY is { } fy)
             {
-                WindowPlacement.MoveToPixels(this, target.X, target.Y);
+                var target = DesktopLayout.HomePixelPosition(monitor.Pixels, fx, fy, rect.Size);
+                if (Math.Abs(target.X - rect.X) >= 1 || Math.Abs(target.Y - rect.Y) >= 1)
+                {
+                    RemoteDebugLog.Write(
+                        $"toolbar: restore {rect.X:0},{rect.Y:0} -> {target.X:0},{target.Y:0} on {monitor.DeviceName} {monitor.Pixels.Width:0}x{monitor.Pixels.Height:0}");
+                    WindowPlacement.MoveToPixels(this, target.X, target.Y);
+                }
             }
-        }
+            else
+            {
+                RemoteDebugLog.Write(
+                    $"toolbar: no home to restore (monitor '{settings.ToolbarMonitor}' found={home is not null}) at {DescribeRect()}");
+            }
 
-        ClampToVisibleScreen();
+            ClampToVisibleScreen();
+        }
+        finally
+        {
+            _restoring = false;
+        }
     }
     /// <summary>
     /// Lays the dock out horizontally or vertically. The double-clicked grip stays under the cursor

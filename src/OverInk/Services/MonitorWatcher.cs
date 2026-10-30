@@ -26,6 +26,17 @@ public sealed class MonitorWatcher : IDisposable
         _timer.Tick += OnTimerTick;
         SystemEvents.DisplaySettingsChanged += OnSystemDisplayEvent;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+    }
+
+    // Coming back from the lock screen is a common way for the display to wake with windows shuffled.
+    private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.SessionLogon
+            or SessionSwitchReason.ConsoleConnect or SessionSwitchReason.RemoteConnect)
+        {
+            Schedule();
+        }
     }
 
     /// <summary>The monitors as of the last notification.</summary>
@@ -107,6 +118,7 @@ public sealed class MonitorWatcher : IDisposable
         _disposed = true;
         SystemEvents.DisplaySettingsChanged -= OnSystemDisplayEvent;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionSwitch -= OnSessionSwitch;
         _timer.Stop();
     }
 }
