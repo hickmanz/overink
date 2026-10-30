@@ -186,6 +186,18 @@ public static class DesktopLayout
     }
 
     /// <summary>
+    /// Pixel top-left for a window of <paramref name="size"/> pixels saved at fractions (<paramref name="fx"/>,
+    /// <paramref name="fy"/>) of <paramref name="monitor"/>, kept fully inside that monitor.
+    /// </summary>
+    public static Point HomePixelPosition(Rect monitor, double fx, double fy, Size size)
+    {
+        var p = NormalizedToPixels(fx, fy, monitor);
+        var x = Math.Min(p.X, monitor.Right - size.Width);
+        var y = Math.Min(p.Y, monitor.Bottom - size.Height);
+        return new Point(Math.Max(x, monitor.Left), Math.Max(y, monitor.Top));
+    }
+
+    /// <summary>
     /// Converts a point in one monitor's local DIPs (origin at the monitor's top-left) to desktop pixels.
     /// </summary>
     public static Point MonitorLocalDipsToPixels(MonitorGeometry monitor, Point localDips) =>

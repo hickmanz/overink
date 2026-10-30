@@ -88,7 +88,8 @@ public partial class ToolbarWindow : Window
 
         LocationChanged += (_, _) =>
         {
-            SavePosition();
+            // Not saved here: Windows also moves the bar by itself when a monitor sleeps or unplugs, and that must
+            // not overwrite where the user left it. Drag end and the orientation toggle save the position.
             UpdatePopupPlacement();
             ReportMonitor();
             BoundsChanged?.Invoke(this, EventArgs.Empty);
@@ -527,11 +528,40 @@ public partial class ToolbarWindow : Window
         {
             _session.Settings.Current.ToolbarPixelX = pixels.X;
             _session.Settings.Current.ToolbarPixelY = pixels.Y;
+
+            // Remember which monitor it is on, and where on it, so it can return there after a sleep/wake.
+            var monitor = MonitorHelper.GetMonitorForPixelRect(pixels);
+            var (nx, ny) = DesktopLayout.PixelsToNormalized(new Point(pixels.X, pixels.Y), monitor.Pixels);
+            _session.Settings.Current.ToolbarMonitor = monitor.DeviceName;
+            _session.Settings.Current.ToolbarMonitorFracX = nx;
+            _session.Settings.Current.ToolbarMonitorFracY = ny;
         }
 
         _session.PersistSettings();
     }
 
+    /// <summary>
+    /// Moves the bar back to where the user last left it. Used after the monitors change or the PC wakes, when
+    /// Windows may have shoved it onto another monitor. If that monitor is not attached, the bar is only kept
+    /// on-screen and the saved home stays untouched, so it can go back once the monitor returns.
+    /// </summary>
+    public void RestoreHomePosition()
+    {
+        var settings = _session.Settings.Current;
+        var rect = WindowPlacement.GetPixelRect(this);
+        var home = MonitorHelper.FindByDeviceName(settings.ToolbarMonitor);
+        if (!rect.IsEmpty && home is { } monitor &&
+            settings.ToolbarMonitorFracX is { } fx && settings.ToolbarMonitorFracY is { } fy)
+        {
+            var target = DesktopLayout.HomePixelPosition(monitor.Pixels, fx, fy, rect.Size);
+            if (Math.Abs(target.X - rect.X) >= 1 || Math.Abs(target.Y - rect.Y) >= 1)
+            {
+                WindowPlacement.MoveToPixels(this, target.X, target.Y);
+            }
+        }
+
+        ClampToVisibleScreen();
+    }
     /// <summary>
     /// Lays the dock out horizontally or vertically. The double-clicked grip stays under the cursor
     /// (when <paramref name="keepGripInPlace"/>) so the bar appears to rotate around the handle.
@@ -619,6 +649,7 @@ public partial class ToolbarWindow : Window
             Left += anchor.X - after.X;
             Top += anchor.Y - after.Y;
             ClampToVisibleScreen();
+            SavePosition();
         }
 
         if (_session.Settings.Current.ToolbarVertical != vertical)
@@ -737,6 +768,7 @@ public partial class ToolbarWindow : Window
         {
             // Never leave the bar parked where it can't be grabbed again.
             ClampToVisibleScreen();
+            SavePosition();
         }
     }
 

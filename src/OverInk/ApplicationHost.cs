@@ -71,6 +71,13 @@ public sealed class ApplicationHost : IDisposable
         // Monitors can be plugged in, removed, or change resolution/scale while the app runs: re-cover the desktop.
         _monitorWatcher = new MonitorWatcher(Application.Current.Dispatcher);
         _monitorWatcher.LayoutChanged += _ => OnMonitorLayoutChanged();
+        _monitorWatcher.Settled += () =>
+        {
+            if (!_disposed)
+            {
+                _toolbar.RestoreHomePosition();
+            }
+        };
         StreamTargetResolver.FollowMonitorChanged += OnStreamTargetMoved;
         _settings.StreamTargetChanged += NotifyStreamChanged;
 
@@ -277,7 +284,7 @@ public sealed class ApplicationHost : IDisposable
         }
 
         _overlay.PlaceOverDesktop();
-        _toolbar.ClampToVisibleScreen();
+        _toolbar.RestoreHomePosition();
         SyncCaptureRegionUi();
         NotifyStreamChanged();
     }

@@ -11,6 +11,11 @@ public sealed class AppSettings
     /// <summary>Toolbar position in desktop pixels. Restores onto the right monitor when monitors have different scales; null for settings saved by older versions (those use <see cref="ToolbarLeft"/>/<see cref="ToolbarTop"/>).</summary>
     public double? ToolbarPixelX { get; set; }
     public double? ToolbarPixelY { get; set; }
+    /// <summary>Device name (for example \\.\DISPLAY2) of the monitor the user last left the toolbar on. Empty until the toolbar is moved.</summary>
+    public string ToolbarMonitor { get; set; } = string.Empty;
+    /// <summary>The toolbar's top-left as 0-1 fractions of <see cref="ToolbarMonitor"/>, so it returns home even if that monitor's resolution changed.</summary>
+    public double? ToolbarMonitorFracX { get; set; }
+    public double? ToolbarMonitorFracY { get; set; }
     /// <summary>True when the toolbar is laid out as a vertical dock (double-click the grip to toggle).</summary>
     public bool ToolbarVertical { get; set; }
     public string PenColor { get; set; } = "#E53935";

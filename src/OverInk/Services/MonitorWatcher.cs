@@ -33,6 +33,12 @@ public sealed class MonitorWatcher : IDisposable
 
     public event Action<IReadOnlyList<MonitorGeometry>>? LayoutChanged;
 
+    /// <summary>
+    /// Raised after a display or wake event has settled, whether or not the layout really changed. Windows can
+    /// move windows around on wake even when the monitors come back identical.
+    /// </summary>
+    public event Action? Settled;
+
     /// <summary>Re-reads the monitors now and raises <see cref="LayoutChanged"/> if they differ.</summary>
     public void Refresh()
     {
@@ -85,6 +91,10 @@ public sealed class MonitorWatcher : IDisposable
     {
         _timer.Stop();
         Refresh();
+        if (!_disposed)
+        {
+            Settled?.Invoke();
+        }
     }
 
     public void Dispose()

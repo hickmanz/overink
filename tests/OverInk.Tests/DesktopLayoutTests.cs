@@ -151,4 +151,45 @@ public sealed class DesktopLayoutTests
         Assert.Equal(100, back.X, 6);
         Assert.Equal(40, back.Y, 6);
     }
+
+    [Fact]
+    public void HomePixelPosition_RoundTripsThroughFractions()
+    {
+        // A bar saved at pixel (1920 + 3000, 400) on the 4K monitor comes back to the same spot.
+        var saved = new Point(1920 + 3000, 400);
+        var (nx, ny) = DesktopLayout.PixelsToNormalized(saved, RightHiDpi.Pixels);
+
+        var home = DesktopLayout.HomePixelPosition(RightHiDpi.Pixels, nx, ny, new Size(60, 500));
+
+        Assert.Equal(saved.X, home.X, 6);
+        Assert.Equal(saved.Y, home.Y, 6);
+    }
+
+    [Fact]
+    public void HomePixelPosition_FollowsAMonitorWhoseResolutionChanged()
+    {
+        // Bar sat at the right edge, a third of the way down. The monitor comes back smaller.
+        var (nx, ny) = DesktopLayout.PixelsToNormalized(new Point(1920 + 3780, 720), RightHiDpi.Pixels);
+        var smaller = new Rect(1920, 0, 1920, 1080);
+
+        var home = DesktopLayout.HomePixelPosition(smaller, nx, ny, new Size(60, 500));
+
+        Assert.Equal(1920 + 1920 - 60, home.X, 6);
+        Assert.Equal(360, home.Y, 6);
+    }
+
+    [Fact]
+    public void HomePixelPosition_KeepsTheBarFullyInsideTheMonitor()
+    {
+        var home = DesktopLayout.HomePixelPosition(Primary.Pixels, 1, 1, new Size(300, 60));
+
+        Assert.Equal(1920 - 300, home.X, 6);
+        Assert.Equal(1080 - 60, home.Y, 6);
+    }
+
+    [Fact]
+    public void FindByDeviceName_Missing_MeansTheHomeMonitorIsAbsent()
+    {
+        Assert.Null(MonitorHelper.FindByDeviceName(@"\\.\DISPLAY_DOES_NOT_EXIST"));
+    }
 }
